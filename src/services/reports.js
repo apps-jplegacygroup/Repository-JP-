@@ -659,30 +659,33 @@ async function sendMonthlyReport() {
 function startDailyReport() {
   // Every day at midnight ET (05:00 UTC) — generate and print report
   cron.schedule('0 5 * * *', () => {
-    console.log('[Reports] Generating daily report...');
+    console.log(`[Cron] ⏰ Ejecutando: reporte diario consola — medianoche ET (05:00 UTC) — ${new Date().toISOString()}`);
     printDailyReport();
   });
 
   // Every day at 8am EDT (12:00 UTC) — send daily report for YESTERDAY
   cron.schedule('0 12 * * *', () => {
     const date = yesterdayKeyET();
-    console.log(`[Reports] Sending daily report by email for ${date} (yesterday ET)...`);
+    console.log(`[Cron] ⏰ Ejecutando: reporte diario email — 8am EDT (12:00 UTC) — fecha: ${date} — ${new Date().toISOString()}`);
     sendReportByEmail(date);
   });
 
   // Every Monday at 8am EDT (12:00 UTC) — send weekly report (covers previous Mon–Sun)
   cron.schedule('0 12 * * 1', () => {
+    console.log(`[Cron] ⏰ Ejecutando: reporte semanal — lunes 8am EDT (12:00 UTC) — ${new Date().toISOString()}`);
     sendWeeklyReport();
   });
 
   // Every 1st of the month at 8am EDT (12:00 UTC) — send monthly report (covers previous month)
   cron.schedule('0 12 1 * *', () => {
+    console.log(`[Cron] ⏰ Ejecutando: reporte mensual — día 1 del mes 8am EDT (12:00 UTC) — ${new Date().toISOString()}`);
     sendMonthlyReport();
   });
 
   // Every day at 8:05am EDT (12:05 UTC) — audit: verify daily report was sent, retry if not
   cron.schedule('5 12 * * *', async () => {
     const date = yesterdayKeyET();
+    console.log(`[Cron] ⏰ Ejecutando: auditoría reporte diario — 8:05am EDT (12:05 UTC) — fecha: ${date} — ${new Date().toISOString()}`);
     const todayLog = getEmailLogForDate(date);
     const alreadySent = todayLog.some((e) => e.type === 'daily' && e.status === 'success');
     if (alreadySent) {
