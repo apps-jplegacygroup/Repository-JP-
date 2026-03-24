@@ -173,12 +173,13 @@ async function buildReport(date) {
 
   // Detalle de leads sorted by score desc, with phone
   lines.push(``);
-  lines.push(`DETALLE DE LEADS DE HOY`);
+  lines.push(`DETALLE DE LEADS DE HOY (ordenado por score)`);
   if (fubLeads.length > 0) {
     fubLeads.forEach((l) => {
       const emoji = l.score >= 8 ? '🔥' : l.score >= 5 ? '🌡️' : l.score !== null ? '❄️' : '•';
-      const scoreLabel = l.score !== null ? `Score ${l.score}/10` : 'Sin score';
-      lines.push(`${emoji} ${l.name} — ${scoreLabel} — ${l.source} — ${l.phone}`);
+      const scoreLabel = l.score !== null ? `${l.score}/10` : '—/10';
+      const reason = l.scoreReason ? ` — ${l.scoreReason}` : '';
+      lines.push(`${emoji} ${scoreLabel}${reason} | ${l.name} — ${l.source} — ${l.phone}`);
     });
   } else {
     lines.push(`Sin leads registrados hoy.`);

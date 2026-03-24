@@ -5,6 +5,7 @@
 
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
+const { scoreLeadFromNotes } = require('./leadScore');
 
 const FUB_BASE_URL = 'https://api.followupboss.com/v1';
 
@@ -237,6 +238,24 @@ async function fetchNotesForPeople(personIds) {
     }
   }
   return noteBodies;
+}
+
+/**
+ * Fetch notes for a single person. Returns array of note body strings.
+ */
+async function fetchNotesForPerson(personId) {
+  try {
+    const response = await axios.get(`${FUB_BASE_URL}/notes`, {
+      headers: fubHeaders(),
+      params: { personId, limit: 10 },
+      timeout: 10000,
+    });
+    return (response.data?.notes || [])
+      .map((n) => n.body)
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -540,16 +559,25 @@ async function fetchLeadsForDate(dateStr) {
 
     console.log(`[FUBReport]   Total fetched: ${totalFetched} | Matching day: ${people.length}`);
 
-    return people
-      .map((p) => {
-        const name   = [p.firstName, p.lastName].filter(Boolean).join(' ') || '—';
-        const phone  = p.phones?.[0]?.value || '—';
-        const source = normalizeSource(p.source) || 'Sin fuente';
-        const scoreTag = (p.tags || []).find((t) => /^Score-\d+$/.test(t));
-        const score  = scoreTag ? parseInt(scoreTag.replace('Score-', ''), 10) : null;
-        return { name, phone, source, score };
+    // Build base lead objects
+    const baseLeads = people.map((p) => ({
+      id:     p.id,
+      name:   [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+      phone:  p.phones?.[0]?.value || '—',
+      email:  p.emails?.[0]?.value || '',
+      source: normalizeSource(p.source) || 'Sin fuente',
+    }));
+
+    // Fetch notes + score each lead in parallel
+    const scored = await Promise.all(
+      baseLeads.map(async (lead) => {
+        const notes = await fetchNotesForPerson(lead.id);
+        const { score, reason } = await scoreLeadFromNotes(lead, notes);
+        return { name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason };
       })
-      .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+    );
+
+    return scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
   } catch (err) {
     console.error('[FUBReport] Error fetching leads for date:', err.message);
     return [];

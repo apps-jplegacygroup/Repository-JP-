@@ -42,18 +42,18 @@ async function analyzeWithAI(text) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.warn('[Score] ANTHROPIC_API_KEY no configurada — scoring omitido.');
-    return { points: 0, breakdown: {} };
+    return { points: 0, breakdown: {}, reason: 'Sin API key' };
   }
   if (!text.trim()) {
     console.warn('[Score] Contexto vacío — scoring omitido.');
-    return { points: 0, breakdown: {} };
+    return { points: 0, breakdown: {}, reason: 'Sin información' };
   }
 
   const client = new Anthropic({ apiKey });
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 200,
+    max_tokens: 300,
     messages: [
       {
         role: 'user',
@@ -66,9 +66,10 @@ Scoring criteria (set true if the lead clearly meets it):
 - hasPreApproval: already spoke with a bank or has pre-approval
 - hasLocation: mentions a specific city or area (Orlando, Tampa, St. Cloud, Apopka, Kissimmee, etc.)
 - isSpanish: the text is in Spanish or the lead appears to be Latino
+- reason: a single short line (max 10 words) summarizing why this lead got this score. Examples: "Cash buyer, Orlando, timeline 2 meses", "Sin información relevante en notas", "Presupuesto 400k, financiado, busca Kissimmee"
 
 Respond ONLY with this JSON (no extra text):
-{"hasBudget":false,"hasTimeline":false,"hasPurchaseType":false,"hasPreApproval":false,"hasLocation":false,"isSpanish":false}
+{"hasBudget":false,"hasTimeline":false,"hasPurchaseType":false,"hasPreApproval":false,"hasLocation":false,"isSpanish":false,"reason":""}
 
 Lead info:
 ${text}`,
@@ -91,14 +92,44 @@ ${text}`,
       (sum, [key, pts]) => sum + (breakdown[key] ? pts : 0),
       0
     );
-    return { points, breakdown };
+    return { points, breakdown, reason: json.reason || '' };
   } catch {
-    return { points: 0, breakdown: {} };
+    return { points: 0, breakdown: {}, reason: '' };
   }
 }
 
 /**
- * Score a lead from 1–10.
+ * Score a lead from 1–10 using FUB notes.
+ * @param {object} lead  - { name, email, phone, source }
+ * @param {string[]} notes - array of note body strings from FUB
+ * @returns {object} { score, reason }
+ */
+async function scoreLeadFromNotes(lead, notes = []) {
+  const hasEmailAndPhone = !!(lead.email && lead.phone);
+
+  const notesText = notes.length > 0
+    ? notes.map((n, i) => `Nota ${i + 1}: ${n}`).join('\n')
+    : '';
+
+  const context = [
+    lead.name   && `Nombre: ${lead.name}`,
+    lead.source && `Fuente: ${lead.source}`,
+    lead.phone  && `Teléfono: ${lead.phone}`,
+    notesText   && `\nNOTAS EN FUB:\n${notesText}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  console.log(`[Score] Analizando notas de: ${lead.name} (${notes.length} notas)`);
+  const aiResult = await analyzeWithAI(context);
+
+  const score = Math.min(10, Math.max(1, aiResult.points + (hasEmailAndPhone ? 1 : 0)));
+
+  return { score, reason: aiResult.reason || '' };
+}
+
+/**
+ * Score a lead from 1–10 using webhook payload.
  * @param {object} lead   - { name, email, phone, source }
  * @param {object} rawBody - full webhook payload (may contain notes, message, etc.)
  * @returns {object} { score, label, tags, noteText }
@@ -134,4 +165,4 @@ async function scoreLead(lead, rawBody = {}) {
   };
 }
 
-module.exports = { scoreLead };
+module.exports = { scoreLead, scoreLeadFromNotes };
