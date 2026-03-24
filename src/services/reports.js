@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { Resend } = require('resend');
-const { getAllStats, getStatsForDate, todayKey, getQueue, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
+const { getAllStats, todayKey, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
 const { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, formatUSD } = require('./fubReport');
 
 const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -123,28 +123,30 @@ async function sendEmail(subject, body, type = 'unknown') {
 // ─── Reporte Diario ────────────────────────────────────────────────────────
 
 async function buildReport(date) {
-  const stats = getStatsForDate(date);
-  const queue = getQueue();
-  const pendingLeads = queue.filter((l) => l.status === 'pending');
-
-  // Fetch leads from FUB for accurate scores + phone data
+  // Fetch leads directly from FUB (source of truth) + closed deals today
   const [fubLeads, closedToday] = await Promise.all([
     fetchLeadsForDate(date),
     fetchClosedToday(date),
   ]);
 
-  // Score breakdown from FUB leads (only those with a score assigned)
+  // Score breakdown from FUB leads
   const scoredLeads = fubLeads.filter((l) => l.score !== null);
   const caliente = scoredLeads.filter((l) => l.score >= 8);
   const tibio    = scoredLeads.filter((l) => l.score >= 5 && l.score <= 7);
   const frio     = scoredLeads.filter((l) => l.score <= 4);
 
+  // Source breakdown derived from FUB leads
+  const sources = {};
+  fubLeads.forEach((l) => {
+    const src = l.source || 'Sin fuente';
+    sources[src] = (sources[src] || 0) + 1;
+  });
+  const allSources = sortedSources(sources);
+
   const lines = [
     `📊 JP Legacy — Reporte Diario ${date}`,
     ``,
-    `Leads recibidos hoy: ${stats.received}`,
-    `Leads enviados al FUB: ${stats.sent}`,
-    `Leads duplicados detectados: ${stats.duplicates || 0}`,
+    `Leads recibidos hoy: ${fubLeads.length}`,
   ];
 
   // Ventas cerradas hoy
@@ -155,14 +157,14 @@ async function buildReport(date) {
     });
   }
 
-  // Scores section — always shown
+  // Scores section
   lines.push(``);
   lines.push(`SCORES DE HOY`);
   lines.push(`🔥 Lead-Caliente (8-10): ${caliente.length} leads`);
   lines.push(`🌡️ Lead-Tibio (5-7): ${tibio.length} leads`);
   lines.push(`❄️ Lead-Frío (1-4): ${frio.length} leads`);
 
-  // Detalle de leads — all leads sorted by score desc, with phone
+  // Detalle de leads sorted by score desc, with phone
   lines.push(``);
   lines.push(`DETALLE DE LEADS DE HOY`);
   if (fubLeads.length > 0) {
@@ -175,11 +177,9 @@ async function buildReport(date) {
     lines.push(`Sin leads registrados hoy.`);
   }
 
-  // Por canal — always shown
+  // Por canal derived from FUB data
   lines.push(``);
   lines.push(`POR CANAL`);
-  const sources = stats.sources || {};
-  const allSources = sortedSources(sources);
   if (allSources.length > 0) {
     allSources.forEach((s) => {
       lines.push(`${s} → ${sources[s]} leads`);
@@ -189,11 +189,7 @@ async function buildReport(date) {
   }
 
   lines.push(``);
-  if (stats.failed === 0) {
-    lines.push('Todos los leads fueron enviados al FUB para gestión comercial.');
-  } else {
-    lines.push(`${pendingLeads.length} leads pendientes de gestión.`);
-  }
+  lines.push('Todos los leads fueron enviados al FUB para gestión comercial.');
 
   // System status footer
   const lastSuccess = getLastSuccessfulDailyEmail();
