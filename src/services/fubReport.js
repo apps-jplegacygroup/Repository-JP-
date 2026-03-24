@@ -13,14 +13,57 @@ const STAGE_UNDER_CONTRACT = 'Under Contract';
 const STAGE_CERRADO = 'Cerrado';
 
 // Source normalization rules — applied before grouping
-// null = ignore this source entirely
+// null = exclude entirely (not a real lead source)
 const SOURCE_MAP = {
-  'Contacts (not leads)': null,
-  'Company': null,
-  'Ylopo': null,
-  '<unspecified>': 'Sin fuente',
-  'Jp Legacy Number (Jorge y Paola)': 'WhatsApp JP Legacy',
-  'Richard Garcia': 'Referidos',
+  // ── EXCLUIDOS ───────────────────────────────────────────────────────────
+  'Contacts (not leads)':           null,
+  '<unspecified>':                  'Sin clasificar ⚠️',
+  'Company':                        null,
+  'Branded Website':                null,
+  'Compass':                        null,
+  'Eventos':                        null,
+  'Ex miembros':                    null,
+  'Import':                         null,
+  'Jose David':                     null,
+  'KVCore':                         null,
+  'Mortgage Calculator':            null,
+  'Sales agents constructoras':     null,
+  'Sebastian Martinez (realtor)':   null,
+  'Svenka Millender':               null,
+  'Ylopo':                          null,
+  'New Lead Source...':             null,
+
+  // ── RENOMBRADOS ─────────────────────────────────────────────────────────
+  'Facebook':                           'Facebook JP',
+  'Facebook Jorge':                     'Facebook Jorge',
+  'Facebook Paola':                     'Facebook Paola',
+  'Instagram JP':                       'Instagram JP',
+  'Instagram Jorge':                    'Instagram Jorge',
+  'Instagram Paola':                    'Instagram Paola',
+  'Tik Tok Jorge':                      'TikTok Jorge',
+  'Tik Tok JP Legacy Group':            'TikTok JP Legacy',
+  'Tik Tok Paola':                      'TikTok Paola',
+  'WhatsApp Paola':                     'WhatsApp Paola',
+  'Jp Legacy Number (Jorge y Paola)':   'WhatsApp JP Legacy',
+  'Youtube Jorge':                      'YouTube Jorge',
+  'Youtube Paola':                      'YouTube Paola',
+  'Homes.com':                          'Homes.com',
+  'Zillow':                             'Zillow',
+  'Referral JP':                        'Referidos JP',
+  'Karina Araya':                       'Referidos Karina',
+  'Carlos Carreno':                     'Referidos Carlos',
+  'Richard Garcia':                     'Referidos Richard',
+  'Pauta Facebook JP':                  'Pauta Facebook JP',
+  'Pauta Facebook Leads Paola':         'Pauta Facebook Paola',
+  'Formulario Web':                     'Formulario Web',
+  'Wojo FB Ads':                        'Wojo FB Ads',
+  'Jorge Florez Personal':              'Jorge Personal',
+  'LinkedIn Paola':                     'LinkedIn Paola',
+  'JP LEGACY LISTINGS':                 'JP Legacy Listings',
+  // Concatenated Respond.io tags (handled here before cleanSourceTag)
+  'PaolaJorge Florez,Instagram,Nuevo Lead': 'Instagram Paola',
+  'PaolaJP Legacy,Facebook,Nuevo Lead':     'Facebook Paola',
+  'PaolaPaola Diaz,Instagram,Nuevo Lead':   'Instagram Paola',
 };
 
 function normalizeSource(raw) {
@@ -78,13 +121,18 @@ function cleanSourceTag(rawSource) {
   if (!rawSource) return 'Sin fuente';
   const lower = rawSource.toLowerCase();
 
-  // Pass-through already-clean sources
+  // Pass-through already-clean (normalized) sources
   const clean = [
     'Instagram Paola', 'Instagram Jorge', 'Instagram JP',
     'Facebook Paola',  'Facebook Jorge',  'Facebook JP',
-    'TikTok Paola',    'TikTok Jorge',    'TikTok JP',
+    'TikTok Paola',    'TikTok Jorge',    'TikTok JP Legacy',
     'YouTube Paola',   'YouTube Jorge',
-    'WhatsApp', 'Zillow', 'Homes.com', 'Referidos', 'Sin fuente',
+    'WhatsApp JP Legacy', 'WhatsApp Paola',
+    'Zillow', 'Homes.com',
+    'Referidos JP', 'Referidos Karina', 'Referidos Carlos', 'Referidos Richard',
+    'Pauta Facebook JP', 'Pauta Facebook Paola',
+    'Formulario Web', 'Wojo FB Ads', 'Jorge Personal',
+    'LinkedIn Paola', 'JP Legacy Listings', 'Sin fuente',
   ];
   if (clean.includes(rawSource)) return rawSource;
 
@@ -478,7 +526,9 @@ async function fetchLeadsForDate(dateStr) {
 
       const inDay = batch.filter((p) => {
         const created = new Date(p.created);
-        return created >= dayStart && created <= dayEnd;
+        return created >= dayStart && created <= dayEnd
+          && (p.stage || '').includes('New Lead Organico')
+          && normalizeSource(p.source) !== null;
       });
       people.push(...inDay);
 
@@ -494,7 +544,7 @@ async function fetchLeadsForDate(dateStr) {
       .map((p) => {
         const name   = [p.firstName, p.lastName].filter(Boolean).join(' ') || '—';
         const phone  = p.phones?.[0]?.value || '—';
-        const source = cleanSourceTag(p.source);
+        const source = normalizeSource(p.source) || 'Sin fuente';
         const scoreTag = (p.tags || []).find((t) => /^Score-\d+$/.test(t));
         const score  = scoreTag ? parseInt(scoreTag.replace('Score-', ''), 10) : null;
         return { name, phone, source, score };

@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { Resend } = require('resend');
-const { getAllStats, todayKey, todayKeyET, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
+const { getAllStats, todayKey, todayKeyET, yesterdayKeyET, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
 const { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, formatUSD } = require('./fubReport');
 
 const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -8,17 +8,24 @@ const MONTHS_ES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio
 
 // Predefined source order (unknown sources appended at the end)
 const SOURCE_ORDER = [
-  'WhatsApp',
-  'Instagram Paola', 'Instagram Jorge', 'Instagram JP',
-  'Facebook Paola',  'Facebook Jorge',  'Facebook JP',
-  'TikTok Paola',    'TikTok Jorge',    'TikTok JP',
-  'YouTube Paola',   'YouTube Jorge',
-  'Zillow', 'Homes.com', 'Referidos', 'Sin fuente',
+  'WhatsApp JP Legacy', 'WhatsApp Paola',
+  'Instagram Paola',    'Instagram Jorge',  'Instagram JP',
+  'Facebook Paola',     'Facebook Jorge',   'Facebook JP',
+  'TikTok Paola',       'TikTok Jorge',     'TikTok JP Legacy',
+  'YouTube Paola',      'YouTube Jorge',
+  'LinkedIn Paola',
+  'Zillow', 'Homes.com',
+  'Referidos JP', 'Referidos Karina', 'Referidos Carlos', 'Referidos Richard',
+  'Pauta Facebook JP', 'Pauta Facebook Paola',
+  'Wojo FB Ads', 'Formulario Web',
+  'Jorge Personal', 'JP Legacy Listings',
+  'Sin fuente',
 ];
 
-// Sources attributed to Paola (by name match)
+// Sources attributed to Paola
 const PAOLA_SOURCES = [
   'Instagram Paola', 'Facebook Paola', 'TikTok Paola', 'YouTube Paola',
+  'WhatsApp Paola', 'LinkedIn Paola', 'Pauta Facebook Paola',
 ];
 
 const RECIPIENTS = [
@@ -191,6 +198,13 @@ async function buildReport(date) {
   lines.push(``);
   lines.push('Todos los leads fueron enviados al FUB para gestión comercial.');
 
+  // ⚠️ Unclassified source warning
+  const unclassifiedDaily = sources['Sin clasificar ⚠️'] || 0;
+  if (unclassifiedDaily > 0) {
+    lines.push(``);
+    lines.push(`⚠️ Acción requerida: ${unclassifiedDaily} lead${unclassifiedDaily > 1 ? 's' : ''} sin fuente clasificada — revisar y actualizar el source en FUB`);
+  }
+
   // System status footer
   const lastSuccess = getLastSuccessfulDailyEmail();
   const lastSentLabel = lastSuccess
@@ -272,6 +286,13 @@ function buildWeeklyReport(weekStart, weekEnd) {
   lines.push(``);
   lines.push(`Paola: ${paolaTotal} leads (${paolaSourcesList.join(' + ') || '—'})`);
   lines.push(`JP: ${jpTotal} leads (${jpSourcesList.join(' + ') || '—'})`);
+
+  // ⚠️ Unclassified source warning
+  const unclassifiedWeekly = sources['Sin clasificar ⚠️'] || 0;
+  if (unclassifiedWeekly > 0) {
+    lines.push(``);
+    lines.push(`⚠️ Acción requerida: ${unclassifiedWeekly} lead${unclassifiedWeekly > 1 ? 's' : ''} sin fuente clasificada — revisar y actualizar el source en FUB`);
+  }
 
   return lines.join('\n');
 }
@@ -385,6 +406,13 @@ async function buildMonthlyReport(year, month) {
   lines.push(``);
   lines.push(`Todos los leads fueron enviados al FUB para gestión comercial.`);
 
+  // ⚠️ Unclassified source warning
+  const unclassifiedMonthly = data.bySource['Sin clasificar ⚠️'] || 0;
+  if (unclassifiedMonthly > 0) {
+    lines.push(``);
+    lines.push(`⚠️ Acción requerida: ${unclassifiedMonthly} lead${unclassifiedMonthly > 1 ? 's' : ''} sin fuente clasificada — revisar y actualizar el source en FUB`);
+  }
+
   return lines.join('\n');
 }
 
@@ -414,10 +442,10 @@ function startDailyReport() {
     printDailyReport();
   });
 
-  // Every day at 8am EDT (12:00 UTC) — send daily report by email
+  // Every day at 8am EDT (12:00 UTC) — send daily report for YESTERDAY
   cron.schedule('0 12 * * *', () => {
-    const date = todayKeyET();
-    console.log(`[Reports] Sending daily report by email for ${date}...`);
+    const date = yesterdayKeyET();
+    console.log(`[Reports] Sending daily report by email for ${date} (yesterday ET)...`);
     sendReportByEmail(date);
   });
 
@@ -433,7 +461,7 @@ function startDailyReport() {
 
   // Every day at 8:05am EDT (12:05 UTC) — audit: verify daily report was sent, retry if not
   cron.schedule('5 12 * * *', async () => {
-    const date = todayKeyET();
+    const date = yesterdayKeyET();
     const todayLog = getEmailLogForDate(date);
     const alreadySent = todayLog.some((e) => e.type === 'daily' && e.status === 'success');
     if (alreadySent) {

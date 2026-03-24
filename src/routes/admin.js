@@ -1,6 +1,6 @@
 const express = require('express');
 const { sendReportByEmail, sendWeeklyReport, sendMonthlyReport } = require('../services/reports');
-const { todayKeyET } = require('../utils/storage');
+const { yesterdayKeyET } = require('../utils/storage');
 
 const router = express.Router();
 
@@ -21,8 +21,8 @@ router.post('/send-report', async (req, res) => {
 
   try {
     if (type === 'daily') {
-      const date = todayKeyET();
-      console.log(`[Admin] Sending daily report for ${date}...`);
+      const date = yesterdayKeyET();
+      console.log(`[Admin] Sending daily report for ${date} (yesterday ET)...`);
       await sendReportByEmail(date);
       return res.json({ ok: true, type: 'daily', date });
     }

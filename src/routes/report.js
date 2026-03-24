@@ -4,11 +4,11 @@ const { getQueue, todayKey } = require('../utils/storage');
 
 const router = express.Router();
 
-// GET /report — today's report as JSON
-router.get('/', (req, res) => {
+// GET /report — today's report as text
+router.get('/', async (req, res) => {
   const date = req.query.date || todayKey();
-  const report = buildReport(date);
   console.log(`[Report] Report requested for ${date}`);
+  const report = await buildReport(date);
   res.type('text/plain').send(report);
 });
 

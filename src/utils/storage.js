@@ -72,6 +72,13 @@ function todayKeyET() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
+// Date string (YYYY-MM-DD) for yesterday in America/New_York
+function yesterdayKeyET() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
 function getStats() {
   return readJSON(STATS_FILE, {});
 }
@@ -156,4 +163,5 @@ module.exports = {
   getAllStats,
   todayKey,
   todayKeyET,
+  yesterdayKeyET,
 };
