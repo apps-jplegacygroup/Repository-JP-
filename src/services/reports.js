@@ -98,7 +98,7 @@ function sortedSources(sources) {
   return [...known, ...others];
 }
 
-async function sendEmail(subject, body, type = 'unknown') {
+async function sendEmail(subject, body, type = 'unknown', html = null) {
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
   const time = now.toTimeString().slice(0, 8);
@@ -110,13 +110,16 @@ async function sendEmail(subject, body, type = 'unknown') {
   }
 
   const resend = new Resend(process.env.RESEND_API_KEY);
+  const payload = {
+    from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+    to: RECIPIENTS,
+    subject,
+    text: body,
+  };
+  if (html) payload.html = html;
+
   try {
-    const { error } = await resend.emails.send({
-      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
-      to: RECIPIENTS,
-      subject,
-      text: body,
-    });
+    const { error } = await resend.emails.send(payload);
     if (error) throw new Error(error.message);
     console.log(`[Reports] Email enviado: ${subject}`);
     appendEmailLog({ date, time, type, subject, status: 'success', error: null });
@@ -125,6 +128,220 @@ async function sendEmail(subject, body, type = 'unknown') {
     appendEmailLog({ date, time, type, subject, status: 'failed', error: err.message });
     throw err;
   }
+}
+
+// ─── HTML Email Builder ─────────────────────────────────────────────────────
+
+function buildDailyReportHTML(date, fubLeads, closedToday, sources, caliente, tibio, frio, lastSentLabel) {
+  const G = '#C9A84C';   // gold
+  const BG = '#000000';  // black
+  const BG2 = '#111111'; // card bg
+  const BG3 = '#1A1A1A'; // row alt
+  const W = '#FFFFFF';   // white
+  const DIM = '#999999'; // dimmed
+
+  const formattedDate = formatSpanishDate(date);
+  const totalLeads = fubLeads.length;
+  const allSources = sortedSources(sources);
+  const maxSourceCount = allSources.length > 0 ? Math.max(...allSources.map((s) => sources[s])) : 1;
+
+  // Lead rows
+  const leadRows = fubLeads.length > 0
+    ? fubLeads.map((l, i) => {
+        const isHot  = l.score >= 8;
+        const isWarm = l.score >= 5 && l.score < 8;
+        const scoreColor = isHot ? '#FF4500' : isWarm ? '#FFD700' : '#4A90D9';
+        const scoreBg    = isHot ? '#2A0A00' : isWarm ? '#2A2200' : '#001A2A';
+        const emoji      = isHot ? '🔥' : isWarm ? '🌡️' : '❄️';
+        const scoreLabel = l.score !== null ? `${l.score}/10` : '—';
+        const rowBg      = i % 2 === 0 ? BG2 : BG3;
+        const reason     = l.scoreReason || '—';
+        return `
+          <tr>
+            <td style="padding:12px 16px;background:${rowBg};border-bottom:1px solid #222;">
+              <span style="font-size:14px;font-weight:700;color:${W};">${l.name}</span>
+              <br><span style="font-size:12px;color:${DIM};">${l.source} &nbsp;|&nbsp; ${l.phone}</span>
+            </td>
+            <td style="padding:12px 16px;background:${scoreBg};border-bottom:1px solid #222;text-align:center;white-space:nowrap;">
+              <span style="font-size:16px;">${emoji}</span>
+              <span style="font-size:15px;font-weight:700;color:${scoreColor};"> ${scoreLabel}</span>
+            </td>
+            <td style="padding:12px 16px;background:${rowBg};border-bottom:1px solid #222;">
+              <span style="font-size:12px;color:${DIM};font-style:italic;">${reason}</span>
+            </td>
+          </tr>`;
+      }).join('')
+    : `<tr><td colspan="3" style="padding:20px;text-align:center;color:${DIM};background:${BG2};">Sin leads registrados hoy.</td></tr>`;
+
+  // Channel bars
+  const channelBars = allSources.map((s) => {
+    const count = sources[s];
+    const pct = Math.round((count / maxSourceCount) * 100);
+    return `
+      <tr>
+        <td style="padding:6px 0;width:40%;color:${W};font-size:13px;">${s}</td>
+        <td style="padding:6px 8px;width:50%;">
+          <div style="background:#222;border-radius:4px;height:10px;overflow:hidden;">
+            <div style="background:${G};height:10px;width:${pct}%;border-radius:4px;"></div>
+          </div>
+        </td>
+        <td style="padding:6px 0;width:10%;color:${G};font-size:13px;font-weight:700;text-align:right;">${count}</td>
+      </tr>`;
+  }).join('');
+
+  // Closed deals
+  const closedSection = closedToday.length > 0
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+        ${closedToday.map((l) => `
+          <tr>
+            <td style="background:#1A1000;border:1px solid ${G};border-radius:6px;padding:14px 18px;margin-bottom:8px;">
+              <span style="font-size:18px;">🏆</span>
+              <span style="font-size:14px;font-weight:700;color:${G};"> ¡VENTA CERRADA HOY!</span>
+              <br><span style="font-size:13px;color:${W};">${l.name} — ${l.source} — ${l.assignedTo}</span>
+            </td>
+          </tr>`).join('<tr><td style="height:8px;"></td></tr>')}
+      </table>`
+    : '';
+
+  // Warning
+  const unclassified = sources['Sin clasificar ⚠️'] || 0;
+  const warningSection = unclassified > 0
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;">
+        <tr>
+          <td style="background:#1A1000;border:1px solid #FF8C00;border-radius:6px;padding:14px 18px;">
+            <span style="color:#FF8C00;font-size:13px;">⚠️ Acción requerida: <strong>${unclassified} lead${unclassified > 1 ? 's' : ''} sin fuente clasificada</strong> — revisar y actualizar el source en FUB</span>
+          </td>
+        </tr>
+      </table>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>JP Legacy — Reporte Diario</title>
+</head>
+<body style="margin:0;padding:0;background-color:${BG};font-family:Arial,Helvetica,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${BG}" style="background:${BG};">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+
+        <!-- CARD WRAPPER -->
+        <table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;">
+
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="padding:36px 40px 24px;background:${BG};">
+              <span style="font-size:28px;font-weight:700;letter-spacing:4px;color:${G};font-family:Arial,sans-serif;">JP LEGACY GROUP</span>
+              <br><br>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="height:1px;background:${G};opacity:0.6;"></td>
+                </tr>
+              </table>
+              <br>
+              <span style="font-size:13px;letter-spacing:2px;color:${DIM};text-transform:uppercase;">Reporte Diario de Leads &nbsp;—&nbsp; ${formattedDate}</span>
+            </td>
+          </tr>
+
+          <!-- SUMMARY BOXES -->
+          <tr>
+            <td style="padding:0 24px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="8">
+                <tr>
+                  <td width="25%" align="center" style="background:${BG2};border:1px solid #333;border-radius:8px;padding:18px 8px;">
+                    <div style="font-size:28px;font-weight:700;color:${G};">${totalLeads}</div>
+                    <div style="font-size:11px;color:${DIM};margin-top:4px;letter-spacing:1px;">TOTAL LEADS</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="21%" align="center" style="background:#2A0A00;border:1px solid #FF4500;border-radius:8px;padding:18px 8px;">
+                    <div style="font-size:26px;font-weight:700;color:#FF4500;">${caliente.length}</div>
+                    <div style="font-size:11px;color:#FF4500;margin-top:4px;">🔥 CALIENTES</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="21%" align="center" style="background:#2A2200;border:1px solid #FFD700;border-radius:8px;padding:18px 8px;">
+                    <div style="font-size:26px;font-weight:700;color:#FFD700;">${tibio.length}</div>
+                    <div style="font-size:11px;color:#FFD700;margin-top:4px;">🌡️ TIBIOS</div>
+                  </td>
+                  <td width="4%"></td>
+                  <td width="21%" align="center" style="background:#001A2A;border:1px solid #4A90D9;border-radius:8px;padding:18px 8px;">
+                    <div style="font-size:26px;font-weight:700;color:#4A90D9;">${frio.length}</div>
+                    <div style="font-size:11px;color:#4A90D9;margin-top:4px;">❄️ FRÍOS</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          ${closedSection ? `<tr><td style="padding:0 24px 8px;">${closedSection}</td></tr>` : ''}
+
+          <!-- LEADS TABLE -->
+          <tr>
+            <td style="padding:0 24px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #333;border-radius:8px;overflow:hidden;">
+                <tr>
+                  <td colspan="3" style="background:#111;padding:14px 16px;border-bottom:1px solid ${G};">
+                    <span style="font-size:12px;font-weight:700;letter-spacing:2px;color:${G};text-transform:uppercase;">Detalle de Leads — Ordenado por Score</span>
+                  </td>
+                </tr>
+                <tr style="background:#0A0A0A;">
+                  <th style="padding:10px 16px;text-align:left;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;">LEAD</th>
+                  <th style="padding:10px 16px;text-align:center;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;white-space:nowrap;">SCORE</th>
+                  <th style="padding:10px 16px;text-align:left;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;">ANÁLISIS IA</th>
+                </tr>
+                ${leadRows}
+              </table>
+            </td>
+          </tr>
+
+          <!-- CHANNELS -->
+          ${allSources.length > 0 ? `
+          <tr>
+            <td style="padding:0 24px 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #333;border-radius:8px;overflow:hidden;">
+                <tr>
+                  <td colspan="3" style="background:#111;padding:14px 16px;border-bottom:1px solid ${G};">
+                    <span style="font-size:12px;font-weight:700;letter-spacing:2px;color:${G};text-transform:uppercase;">Por Canal</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td colspan="3" style="padding:16px 20px;background:${BG2};">
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      ${channelBars}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>` : ''}
+
+          ${warningSection ? `<tr><td style="padding:0 24px 24px;">${warningSection}</td></tr>` : ''}
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="padding:24px 40px;border-top:1px solid #222;text-align:center;">
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="height:1px;background:${G};opacity:0.3;"></td>
+                </tr>
+              </table>
+              <br>
+              <span style="font-size:11px;color:${DIM};letter-spacing:1px;">JP Legacy Group © 2026 &nbsp;—&nbsp; Sistema Automatizado de Leads</span>
+              <br>
+              <span style="font-size:10px;color:#555;margin-top:6px;display:block;">Último reporte enviado: ${lastSentLabel}</span>
+            </td>
+          </tr>
+
+        </table>
+        <!-- END CARD -->
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }
 
 // ─── Reporte Diario ────────────────────────────────────────────────────────
@@ -213,13 +430,16 @@ async function buildReport(date) {
     : 'sin registros previos';
   lines.push(`✅ Sistema operativo — último reporte enviado: ${lastSentLabel}`);
 
-  return lines.join('\n');
+  const text = lines.join('\n');
+  const html = buildDailyReportHTML(date, fubLeads, closedToday, sources, caliente, tibio, frio, lastSentLabel);
+
+  return { text, html };
 }
 
 async function printDailyReport() {
-  const report = await buildReport(todayKeyET());
-  console.log('\n' + report);
-  return report;
+  const { text } = await buildReport(todayKeyET());
+  console.log('\n' + text);
+  return text;
 }
 
 function getAllReports() {
@@ -230,9 +450,9 @@ function getAllReports() {
 }
 
 async function sendReportByEmail(date) {
-  const report = await buildReport(date);
+  const { text, html } = await buildReport(date);
   const subject = `📊 JP Legacy — Reporte Diario ${date}`;
-  await sendEmail(subject, report, 'daily');
+  await sendEmail(subject, text, 'daily', html);
 }
 
 // ─── Reporte Semanal ───────────────────────────────────────────────────────

@@ -8,8 +8,8 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   const date = req.query.date || todayKey();
   console.log(`[Report] Report requested for ${date}`);
-  const report = await buildReport(date);
-  res.type('text/plain').send(report);
+  const { text } = await buildReport(date);
+  res.type('text/plain').send(text);
 });
 
 // GET /report/json — all stats as JSON
