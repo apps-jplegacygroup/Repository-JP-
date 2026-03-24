@@ -105,7 +105,7 @@ async function sendEmail(subject, body, type = 'unknown') {
   const resend = new Resend(process.env.RESEND_API_KEY);
   try {
     const { error } = await resend.emails.send({
-      from: 'JP Legacy Agent <reports@jplegacygroup.com>',
+      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
       to: RECIPIENTS,
       subject,
       text: body,
@@ -473,7 +473,7 @@ function startDailyReport() {
         try {
           const resend = new Resend(process.env.RESEND_API_KEY);
           const { error: alertErr } = await resend.emails.send({
-            from: 'JP Legacy Agent <reports@jplegacygroup.com>',
+            from: 'JP Legacy Agent <apps@jplegacygroup.com>',
             to: 'jorgeflorez@jplegacygroup.com',
             subject: alertSubject,
             text: alertBody,
