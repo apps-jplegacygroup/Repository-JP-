@@ -408,8 +408,8 @@ async function sendMonthlyReport() {
 // ─── Scheduler ─────────────────────────────────────────────────────────────
 
 function startDailyReport() {
-  // Every day at midnight — generate and print report
-  cron.schedule('0 0 * * *', () => {
+  // Every day at midnight ET (05:00 UTC) — generate and print report
+  cron.schedule('0 5 * * *', () => {
     console.log('[Reports] Generating daily report...');
     printDailyReport();
   });
