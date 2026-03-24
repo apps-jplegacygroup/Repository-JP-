@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const { getAllStats, getStatsForDate, todayKey, getQueue, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
 const { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, formatUSD } = require('./fubReport');
 
@@ -92,27 +92,25 @@ function sortedSources(sources) {
 }
 
 async function sendEmail(subject, body, type = 'unknown') {
-  const { GMAIL_USER, GMAIL_APP_PASSWORD } = process.env;
   const now = new Date();
   const date = now.toISOString().slice(0, 10);
   const time = now.toTimeString().slice(0, 8);
 
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
-    console.warn('[Reports] Email skipped: GMAIL_USER or GMAIL_APP_PASSWORD not set.');
-    appendEmailLog({ date, time, type, subject, status: 'failed', error: 'Credenciales no configuradas' });
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[Reports] Email skipped: RESEND_API_KEY not set.');
+    appendEmailLog({ date, time, type, subject, status: 'failed', error: 'RESEND_API_KEY no configurada' });
     return;
   }
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-  });
+
+  const resend = new Resend(process.env.RESEND_API_KEY);
   try {
-    await transporter.sendMail({
-      from: `"JP Legacy Agent" <${GMAIL_USER}>`,
+    const { error } = await resend.emails.send({
+      from: 'JP Legacy Agent <reports@jplegacygroup.com>',
       to: RECIPIENTS,
       subject,
       text: body,
     });
+    if (error) throw new Error(error.message);
     console.log(`[Reports] Email enviado: ${subject}`);
     appendEmailLog({ date, time, type, subject, status: 'success', error: null });
   } catch (err) {
@@ -471,19 +469,16 @@ function startDailyReport() {
           `Por favor, verifica el sistema manualmente.`,
         ].join('\n');
 
-        const { GMAIL_USER, GMAIL_APP_PASSWORD } = process.env;
-        const transporter = nodemailer.createTransport({
-          service: 'gmail',
-          auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
-        });
         const now = new Date();
         try {
-          await transporter.sendMail({
-            from: `"JP Legacy Agent" <${GMAIL_USER}>`,
+          const resend = new Resend(process.env.RESEND_API_KEY);
+          const { error: alertErr } = await resend.emails.send({
+            from: 'JP Legacy Agent <reports@jplegacygroup.com>',
             to: 'jorgeflorez@jplegacygroup.com',
             subject: alertSubject,
             text: alertBody,
           });
+          if (alertErr) throw new Error(alertErr.message);
           console.log('[Audit] Alerta enviada a jorgeflorez@jplegacygroup.com');
           appendEmailLog({
             date: now.toISOString().slice(0, 10),
