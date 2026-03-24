@@ -447,9 +447,14 @@ async function fetchLeadsForDate(dateStr) {
   try {
     const { dayStart, dayEnd } = etDayBounds(dateStr);
 
+    console.log(`[FUBReport] Filtro ET para ${dateStr}:`);
+    console.log(`[FUBReport]   dayStart UTC: ${dayStart.toISOString()}`);
+    console.log(`[FUBReport]   dayEnd   UTC: ${dayEnd.toISOString()}`);
+
     const people = [];
     let offset = 0;
     const limit = 100;
+    let totalFetched = 0;
 
     while (true) {
       const response = await axios.get(`${FUB_BASE_URL}/people`, {
@@ -460,6 +465,16 @@ async function fetchLeadsForDate(dateStr) {
 
       const batch = response.data?.people || [];
       if (batch.length === 0) break;
+
+      // Log first batch diagnostics
+      if (offset === 0) {
+        console.log(`[FUBReport]   FUB returned ${batch.length} people in first page`);
+        batch.slice(0, 3).forEach((p, i) => {
+          const name = [p.firstName, p.lastName].filter(Boolean).join(' ') || '—';
+          console.log(`[FUBReport]   lead[${i}]: ${name} — created: ${p.created}`);
+        });
+      }
+      totalFetched += batch.length;
 
       const inDay = batch.filter((p) => {
         const created = new Date(p.created);
@@ -472,6 +487,8 @@ async function fetchLeadsForDate(dateStr) {
       if (batch.length < limit) break;
       offset += limit;
     }
+
+    console.log(`[FUBReport]   Total fetched: ${totalFetched} | Matching day: ${people.length}`);
 
     return people
       .map((p) => {
