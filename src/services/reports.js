@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { Resend } = require('resend');
-const { getAllStats, todayKey, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
+const { getAllStats, todayKey, todayKeyET, appendEmailLog, getEmailLogForDate, getLastSuccessfulDailyEmail } = require('../utils/storage');
 const { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, formatUSD } = require('./fubReport');
 
 const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -202,7 +202,7 @@ async function buildReport(date) {
 }
 
 async function printDailyReport() {
-  const report = await buildReport(todayKey());
+  const report = await buildReport(todayKeyET());
   console.log('\n' + report);
   return report;
 }
@@ -416,7 +416,7 @@ function startDailyReport() {
 
   // Every day at 8am EDT (12:00 UTC) — send daily report by email
   cron.schedule('0 12 * * *', () => {
-    const date = todayKey();
+    const date = todayKeyET();
     console.log(`[Reports] Sending daily report by email for ${date}...`);
     sendReportByEmail(date);
   });
@@ -433,7 +433,7 @@ function startDailyReport() {
 
   // Every day at 8:05am EDT (12:05 UTC) — audit: verify daily report was sent, retry if not
   cron.schedule('5 12 * * *', async () => {
-    const date = todayKey();
+    const date = todayKeyET();
     const todayLog = getEmailLogForDate(date);
     const alreadySent = todayLog.some((e) => e.type === 'daily' && e.status === 'success');
     if (alreadySent) {
