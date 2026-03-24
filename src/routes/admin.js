@@ -21,8 +21,8 @@ router.post('/send-report', async (req, res) => {
 
   try {
     if (type === 'daily') {
-      const date = yesterdayKeyET();
-      console.log(`[Admin] Sending daily report for ${date} (yesterday ET)...`);
+      const date = req.query.date || yesterdayKeyET();
+      console.log(`[Admin] Sending daily report for ${date}...`);
       await sendReportByEmail(date);
       return res.json({ ok: true, type: 'daily', date });
     }
