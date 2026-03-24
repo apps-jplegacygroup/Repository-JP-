@@ -133,13 +133,6 @@ async function sendEmail(subject, body, type = 'unknown', html = null) {
 // ─── HTML Email Builder ─────────────────────────────────────────────────────
 
 function buildDailyReportHTML(date, fubLeads, closedToday, sources, caliente, tibio, frio, lastSentLabel) {
-  const G = '#C9A84C';   // gold
-  const BG = '#000000';  // black
-  const BG2 = '#111111'; // card bg
-  const BG3 = '#1A1A1A'; // row alt
-  const W = '#FFFFFF';   // white
-  const DIM = '#999999'; // dimmed
-
   const formattedDate = formatSpanishDate(date);
   const totalLeads = fubLeads.length;
   const allSources = sortedSources(sources);
@@ -147,72 +140,68 @@ function buildDailyReportHTML(date, fubLeads, closedToday, sources, caliente, ti
 
   // Lead rows
   const leadRows = fubLeads.length > 0
-    ? fubLeads.map((l, i) => {
+    ? fubLeads.map((l) => {
         const isHot  = l.score >= 8;
         const isWarm = l.score >= 5 && l.score < 8;
-        const scoreColor = isHot ? '#FF4500' : isWarm ? '#FFD700' : '#4A90D9';
-        const scoreBg    = isHot ? '#2A0A00' : isWarm ? '#2A2200' : '#001A2A';
+        const scoreClass = isHot ? 'score-hot' : isWarm ? 'score-warm' : 'score-cold';
+        const scoreColor = isHot ? '#FF6B35' : isWarm ? '#FFD700' : '#4FC3F7';
         const emoji      = isHot ? '🔥' : isWarm ? '🌡️' : '❄️';
-        const scoreLabel = l.score !== null ? `${l.score}/10` : '—';
-        const rowBg      = i % 2 === 0 ? BG2 : BG3;
+        const scoreLabel = l.score !== null ? `${emoji} ${l.score}/10` : '—';
         const reason     = l.scoreReason || '—';
         return `
-          <tr>
-            <td style="padding:12px 16px;background:${rowBg};border-bottom:1px solid #222;">
-              <span style="font-size:14px;font-weight:700;color:${W};">${l.name}</span>
-              <br><span style="font-size:12px;color:${DIM};">${l.source} &nbsp;|&nbsp; ${l.phone}</span>
-            </td>
-            <td style="padding:12px 16px;background:${scoreBg};border-bottom:1px solid #222;text-align:center;white-space:nowrap;">
-              <span style="font-size:16px;">${emoji}</span>
-              <span style="font-size:15px;font-weight:700;color:${scoreColor};"> ${scoreLabel}</span>
-            </td>
-            <td style="padding:12px 16px;background:${rowBg};border-bottom:1px solid #222;">
-              <span style="font-size:12px;color:${DIM};font-style:italic;">${reason}</span>
-            </td>
-          </tr>`;
+        <div class="lead-row">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td width="50%">
+                <div class="lead-name">${l.name}</div>
+                <div class="lead-source">${l.source} &nbsp;|&nbsp; ${l.phone}</div>
+              </td>
+              <td width="20%" align="center">
+                <span style="color:${scoreColor};font-weight:bold;font-size:15px;">${scoreLabel}</span>
+              </td>
+              <td width="30%" align="right">
+                <span style="color:#888888;font-size:11px;font-style:italic;">${reason}</span>
+              </td>
+            </tr>
+          </table>
+        </div>`;
       }).join('')
-    : `<tr><td colspan="3" style="padding:20px;text-align:center;color:${DIM};background:${BG2};">Sin leads registrados hoy.</td></tr>`;
+    : '<div style="color:#888888;padding:16px 0;text-align:center;">Sin leads registrados hoy.</div>';
 
   // Channel bars
   const channelBars = allSources.map((s) => {
     const count = sources[s];
     const pct = Math.round((count / maxSourceCount) * 100);
     return `
-      <tr>
-        <td style="padding:6px 0;width:40%;color:${W};font-size:13px;">${s}</td>
-        <td style="padding:6px 8px;width:50%;">
-          <div style="background:#222;border-radius:4px;height:10px;overflow:hidden;">
-            <div style="background:${G};height:10px;width:${pct}%;border-radius:4px;"></div>
-          </div>
-        </td>
-        <td style="padding:6px 0;width:10%;color:${G};font-size:13px;font-weight:700;text-align:right;">${count}</td>
-      </tr>`;
+      <div style="margin-bottom:12px;">
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td width="38%" style="color:#FFFFFF;font-size:12px;padding-right:8px;">${s}</td>
+            <td width="50%">
+              <div class="channel-bar"><div class="channel-fill" style="width:${pct}%;"></div></div>
+            </td>
+            <td width="12%" align="right" style="color:#C9A84C;font-size:12px;font-weight:bold;padding-left:8px;">${count}</td>
+          </tr>
+        </table>
+      </div>`;
   }).join('');
 
   // Closed deals
-  const closedSection = closedToday.length > 0
-    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
-        ${closedToday.map((l) => `
-          <tr>
-            <td style="background:#1A1000;border:1px solid ${G};border-radius:6px;padding:14px 18px;margin-bottom:8px;">
-              <span style="font-size:18px;">🏆</span>
-              <span style="font-size:14px;font-weight:700;color:${G};"> ¡VENTA CERRADA HOY!</span>
-              <br><span style="font-size:13px;color:${W};">${l.name} — ${l.source} — ${l.assignedTo}</span>
-            </td>
-          </tr>`).join('<tr><td style="height:8px;"></td></tr>')}
-      </table>`
+  const closedHTML = closedToday.length > 0
+    ? closedToday.map((l) => `
+      <div style="background:#111111;border:1px solid #C9A84C;border-radius:8px;padding:16px;margin-bottom:10px;">
+        <span style="font-size:20px;">🏆</span>
+        <span style="color:#C9A84C;font-weight:bold;font-size:14px;letter-spacing:1px;"> ¡VENTA CERRADA!</span>
+        <div style="color:#FFFFFF;margin-top:6px;font-size:13px;">${l.name} &nbsp;·&nbsp; ${l.source} &nbsp;·&nbsp; ${l.assignedTo}</div>
+      </div>`).join('')
     : '';
 
   // Warning
   const unclassified = sources['Sin clasificar ⚠️'] || 0;
-  const warningSection = unclassified > 0
-    ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;">
-        <tr>
-          <td style="background:#1A1000;border:1px solid #FF8C00;border-radius:6px;padding:14px 18px;">
-            <span style="color:#FF8C00;font-size:13px;">⚠️ Acción requerida: <strong>${unclassified} lead${unclassified > 1 ? 's' : ''} sin fuente clasificada</strong> — revisar y actualizar el source en FUB</span>
-          </td>
-        </tr>
-      </table>`
+  const warningHTML = unclassified > 0
+    ? `<div style="background:#111111;border:1px solid #FF8C00;border-radius:8px;padding:14px 18px;margin-top:16px;">
+        <span style="color:#FF8C00;font-size:13px;">⚠️ <strong>${unclassified} lead${unclassified > 1 ? 's' : ''} sin fuente clasificada</strong> — revisar y actualizar el source en FUB</span>
+      </div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -222,124 +211,100 @@ function buildDailyReportHTML(date, fubLeads, closedToday, sources, caliente, ti
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>JP Legacy — Reporte Diario</title>
+  <style>
+    body { background:#000000; font-family:Arial,sans-serif; color:#FFFFFF; margin:0; padding:0; }
+    .container { max-width:600px; margin:0 auto; padding:20px; }
+    .header { text-align:center; border-bottom:2px solid #C9A84C; padding:20px 0; margin-bottom:20px; }
+    .logo { color:#C9A84C; font-size:28px; font-weight:bold; letter-spacing:4px; }
+    .subtitle { color:#888888; font-size:12px; letter-spacing:2px; margin-top:6px; text-transform:uppercase; }
+    .card { background:#111111; border:1px solid rgba(201,168,76,0.2); border-radius:8px; padding:20px; margin:15px 0; }
+    .card-title { color:#C9A84C; font-size:11px; letter-spacing:3px; text-transform:uppercase; margin-bottom:15px; font-weight:bold; }
+    .stat-grid { display:table; width:100%; }
+    .stat-cell { display:table-cell; text-align:center; width:25%; padding:10px 4px; }
+    .stat-number { color:#FFFFFF; font-size:36px; font-weight:bold; line-height:1; }
+    .stat-label { color:#888888; font-size:10px; letter-spacing:1px; margin-top:4px; text-transform:uppercase; }
+    .stat-number-hot  { color:#FF6B35; font-size:32px; font-weight:bold; line-height:1; }
+    .stat-number-warm { color:#FFD700; font-size:32px; font-weight:bold; line-height:1; }
+    .stat-number-cold { color:#4FC3F7; font-size:32px; font-weight:bold; line-height:1; }
+    .lead-row { border-bottom:1px solid #222222; padding:12px 0; }
+    .lead-row:last-child { border-bottom:none; }
+    .lead-name { color:#FFFFFF; font-weight:bold; font-size:14px; }
+    .lead-source { color:#888888; font-size:12px; margin-top:2px; }
+    .score-hot  { color:#FF6B35; font-weight:bold; }
+    .score-warm { color:#FFD700; font-weight:bold; }
+    .score-cold { color:#4FC3F7; font-weight:bold; }
+    .channel-bar  { background:#222222; border-radius:4px; height:6px; }
+    .channel-fill { background:#C9A84C; border-radius:4px; height:6px; }
+    .footer { text-align:center; color:#444444; font-size:11px; padding:20px 0; border-top:1px solid #222222; margin-top:20px; }
+    .divider { border:none; border-top:1px solid #222222; margin:0; }
+  </style>
 </head>
-<body style="margin:0;padding:0;background-color:${BG};font-family:Arial,Helvetica,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" bgcolor="${BG}" style="background:${BG};">
-    <tr>
-      <td align="center" style="padding:32px 16px;">
+<body>
+  <div class="container">
 
-        <!-- CARD WRAPPER -->
-        <table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;">
+    <!-- HEADER -->
+    <div class="header">
+      <div class="logo">JP LEGACY GROUP</div>
+      <div class="subtitle">Reporte Diario de Leads &nbsp;—&nbsp; ${formattedDate}</div>
+    </div>
 
-          <!-- HEADER -->
-          <tr>
-            <td align="center" style="padding:36px 40px 24px;background:${BG};">
-              <span style="font-size:28px;font-weight:700;letter-spacing:4px;color:${G};font-family:Arial,sans-serif;">JP LEGACY GROUP</span>
-              <br><br>
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="height:1px;background:${G};opacity:0.6;"></td>
-                </tr>
-              </table>
-              <br>
-              <span style="font-size:13px;letter-spacing:2px;color:${DIM};text-transform:uppercase;">Reporte Diario de Leads &nbsp;—&nbsp; ${formattedDate}</span>
-            </td>
-          </tr>
+    <!-- SUMMARY STATS -->
+    <div class="card">
+      <div class="card-title">Resumen del Día</div>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td width="25%" align="center" style="padding:8px 0;">
+            <div class="stat-number">${totalLeads}</div>
+            <div class="stat-label">Total Leads</div>
+          </td>
+          <td width="25%" align="center" style="padding:8px 0;border-left:1px solid #222;">
+            <div class="stat-number-hot">${caliente.length}</div>
+            <div class="stat-label" style="color:#FF6B35;">🔥 Calientes</div>
+          </td>
+          <td width="25%" align="center" style="padding:8px 0;border-left:1px solid #222;">
+            <div class="stat-number-warm">${tibio.length}</div>
+            <div class="stat-label" style="color:#FFD700;">🌡️ Tibios</div>
+          </td>
+          <td width="25%" align="center" style="padding:8px 0;border-left:1px solid #222;">
+            <div class="stat-number-cold">${frio.length}</div>
+            <div class="stat-label" style="color:#4FC3F7;">❄️ Fríos</div>
+          </td>
+        </tr>
+      </table>
+    </div>
 
-          <!-- SUMMARY BOXES -->
-          <tr>
-            <td style="padding:0 24px 24px;">
-              <table width="100%" cellpadding="0" cellspacing="8">
-                <tr>
-                  <td width="25%" align="center" style="background:${BG2};border:1px solid #333;border-radius:8px;padding:18px 8px;">
-                    <div style="font-size:28px;font-weight:700;color:${G};">${totalLeads}</div>
-                    <div style="font-size:11px;color:${DIM};margin-top:4px;letter-spacing:1px;">TOTAL LEADS</div>
-                  </td>
-                  <td width="4%"></td>
-                  <td width="21%" align="center" style="background:#2A0A00;border:1px solid #FF4500;border-radius:8px;padding:18px 8px;">
-                    <div style="font-size:26px;font-weight:700;color:#FF4500;">${caliente.length}</div>
-                    <div style="font-size:11px;color:#FF4500;margin-top:4px;">🔥 CALIENTES</div>
-                  </td>
-                  <td width="4%"></td>
-                  <td width="21%" align="center" style="background:#2A2200;border:1px solid #FFD700;border-radius:8px;padding:18px 8px;">
-                    <div style="font-size:26px;font-weight:700;color:#FFD700;">${tibio.length}</div>
-                    <div style="font-size:11px;color:#FFD700;margin-top:4px;">🌡️ TIBIOS</div>
-                  </td>
-                  <td width="4%"></td>
-                  <td width="21%" align="center" style="background:#001A2A;border:1px solid #4A90D9;border-radius:8px;padding:18px 8px;">
-                    <div style="font-size:26px;font-weight:700;color:#4A90D9;">${frio.length}</div>
-                    <div style="font-size:11px;color:#4A90D9;margin-top:4px;">❄️ FRÍOS</div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+    ${closedHTML}
 
-          ${closedSection ? `<tr><td style="padding:0 24px 8px;">${closedSection}</td></tr>` : ''}
+    <!-- LEADS -->
+    <div class="card">
+      <div class="card-title">Detalle de Leads — Ordenado por Score</div>
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:4px;">
+        <tr>
+          <td width="50%" style="font-size:10px;color:#555555;letter-spacing:1px;padding-bottom:8px;">LEAD</td>
+          <td width="20%" align="center" style="font-size:10px;color:#555555;letter-spacing:1px;padding-bottom:8px;">SCORE</td>
+          <td width="30%" align="right" style="font-size:10px;color:#555555;letter-spacing:1px;padding-bottom:8px;">ANÁLISIS IA</td>
+        </tr>
+      </table>
+      <hr class="divider">
+      ${leadRows}
+    </div>
 
-          <!-- LEADS TABLE -->
-          <tr>
-            <td style="padding:0 24px 24px;">
-              <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #333;border-radius:8px;overflow:hidden;">
-                <tr>
-                  <td colspan="3" style="background:#111;padding:14px 16px;border-bottom:1px solid ${G};">
-                    <span style="font-size:12px;font-weight:700;letter-spacing:2px;color:${G};text-transform:uppercase;">Detalle de Leads — Ordenado por Score</span>
-                  </td>
-                </tr>
-                <tr style="background:#0A0A0A;">
-                  <th style="padding:10px 16px;text-align:left;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;">LEAD</th>
-                  <th style="padding:10px 16px;text-align:center;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;white-space:nowrap;">SCORE</th>
-                  <th style="padding:10px 16px;text-align:left;font-size:11px;color:${DIM};letter-spacing:1px;font-weight:600;border-bottom:1px solid #222;">ANÁLISIS IA</th>
-                </tr>
-                ${leadRows}
-              </table>
-            </td>
-          </tr>
+    ${allSources.length > 0 ? `
+    <!-- CHANNELS -->
+    <div class="card">
+      <div class="card-title">Por Canal</div>
+      ${channelBars}
+    </div>` : ''}
 
-          <!-- CHANNELS -->
-          ${allSources.length > 0 ? `
-          <tr>
-            <td style="padding:0 24px 24px;">
-              <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #333;border-radius:8px;overflow:hidden;">
-                <tr>
-                  <td colspan="3" style="background:#111;padding:14px 16px;border-bottom:1px solid ${G};">
-                    <span style="font-size:12px;font-weight:700;letter-spacing:2px;color:${G};text-transform:uppercase;">Por Canal</span>
-                  </td>
-                </tr>
-                <tr>
-                  <td colspan="3" style="padding:16px 20px;background:${BG2};">
-                    <table width="100%" cellpadding="0" cellspacing="0">
-                      ${channelBars}
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>` : ''}
+    ${warningHTML}
 
-          ${warningSection ? `<tr><td style="padding:0 24px 24px;">${warningSection}</td></tr>` : ''}
+    <!-- FOOTER -->
+    <div class="footer">
+      JP Legacy Group &copy; 2026 &nbsp;—&nbsp; Sistema Automatizado de Leads<br>
+      <span style="color:#333333;font-size:10px;">Último reporte: ${lastSentLabel}</span>
+    </div>
 
-          <!-- FOOTER -->
-          <tr>
-            <td style="padding:24px 40px;border-top:1px solid #222;text-align:center;">
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="height:1px;background:${G};opacity:0.3;"></td>
-                </tr>
-              </table>
-              <br>
-              <span style="font-size:11px;color:${DIM};letter-spacing:1px;">JP Legacy Group © 2026 &nbsp;—&nbsp; Sistema Automatizado de Leads</span>
-              <br>
-              <span style="font-size:10px;color:#555;margin-top:6px;display:block;">Último reporte enviado: ${lastSentLabel}</span>
-            </td>
-          </tr>
-
-        </table>
-        <!-- END CARD -->
-
-      </td>
-    </tr>
-  </table>
+  </div>
 </body>
 </html>`;
 }

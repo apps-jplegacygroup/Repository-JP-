@@ -546,7 +546,6 @@ async function fetchLeadsForDate(dateStr) {
       const inDay = batch.filter((p) => {
         const created = new Date(p.created);
         return created >= dayStart && created <= dayEnd
-          && (p.stage || '').includes('New Lead Organico')
           && normalizeSource(p.source) !== null;
       });
       people.push(...inDay);
@@ -584,4 +583,53 @@ async function fetchLeadsForDate(dateStr) {
   }
 }
 
-module.exports = { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, cleanSourceTag, formatUSD };
+/**
+ * Diagnostic: show raw FUB data for a date without stage filtering.
+ * Returns { dateStr, dayStartUTC, dayEndUTC, totalInPage, inDateRange, stages, samples }
+ */
+async function debugFUBLeads(dateStr) {
+  const { dayStart, dayEnd } = etDayBounds(dateStr);
+
+  const response = await axios.get(`${FUB_BASE_URL}/people`, {
+    headers: fubHeaders(),
+    params: { sort: '-created', limit: 100, offset: 0 },
+    timeout: 15000,
+  });
+
+  const batch = response.data?.people || [];
+
+  // People in the date range (no stage filter, no source filter)
+  const inRange = batch.filter((p) => {
+    const created = new Date(p.created);
+    return created >= dayStart && created <= dayEnd;
+  });
+
+  // Unique stages across the whole first page
+  const stageSet = {};
+  batch.forEach((p) => {
+    const s = p.stage || '(empty)';
+    stageSet[s] = (stageSet[s] || 0) + 1;
+  });
+
+  // Sample leads in range
+  const samples = inRange.map((p) => ({
+    name:   [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+    created: p.created,
+    stage:  p.stage || '(empty)',
+    source: p.source || '(empty)',
+    normalizedSource: normalizeSource(p.source),
+  }));
+
+  return {
+    dateStr,
+    dayStartUTC: dayStart.toISOString(),
+    dayEndUTC:   dayEnd.toISOString(),
+    queryParams: { sort: '-created', limit: 100, offset: 0 },
+    totalInPage: batch.length,
+    inDateRangeCount: inRange.length,
+    stagesInPage: stageSet,
+    samplesInRange: samples,
+  };
+}
+
+module.exports = { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, cleanSourceTag, formatUSD, debugFUBLeads };

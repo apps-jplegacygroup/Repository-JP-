@@ -1,5 +1,6 @@
 const express = require('express');
 const { sendReportByEmail, sendWeeklyReport, sendMonthlyReport } = require('../services/reports');
+const { debugFUBLeads } = require('../services/fubReport');
 const { yesterdayKeyET } = require('../utils/storage');
 
 const router = express.Router();
@@ -42,6 +43,17 @@ router.post('/send-report', async (req, res) => {
     return res.status(400).json({ error: 'type must be daily, weekly, or monthly' });
   } catch (err) {
     console.error(`[Admin] Error sending ${type} report:`, err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/debug-fub?date=YYYY-MM-DD — diagnose FUB lead fetch for a specific date
+router.get('/debug-fub', async (req, res) => {
+  const date = req.query.date || yesterdayKeyET();
+  try {
+    const result = await debugFUBLeads(date);
+    return res.json(result);
+  } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
