@@ -1,6 +1,10 @@
 const express = require('express');
 const { sendReportByEmail, sendWeeklyReport, sendMonthlyReport } = require('../services/reports');
-const { sendMarketingReport } = require('../services/marketingReport');
+const {
+  sendDailyMarketingReport,
+  sendWeeklyMarketingReport,
+  sendMonthlyMarketingReport,
+} = require('../services/marketingReport');
 const { debugFUBLeads } = require('../services/fubReport');
 const { yesterdayKeyET } = require('../utils/storage');
 
@@ -50,16 +54,34 @@ router.post('/send-report', async (req, res) => {
       return;
     }
 
-    if (type === 'marketing') {
-      console.log('[Admin] Sending marketing report (background)...');
-      res.json({ ok: true, type: 'marketing', status: 'processing' });
-      sendMarketingReport().catch((err) =>
-        console.error('[Admin] Background marketing report failed:', err.message)
+    if (type === 'marketing-daily' || type === 'marketing') {
+      console.log('[Admin] Sending marketing-daily report (background)...');
+      res.json({ ok: true, type: 'marketing-daily', status: 'processing' });
+      sendDailyMarketingReport().catch((err) =>
+        console.error('[Admin] Background marketing-daily failed:', err.message)
       );
       return;
     }
 
-    return res.status(400).json({ error: 'type must be daily, weekly, monthly, or marketing' });
+    if (type === 'marketing-weekly') {
+      console.log('[Admin] Sending marketing-weekly report (background)...');
+      res.json({ ok: true, type: 'marketing-weekly', status: 'processing' });
+      sendWeeklyMarketingReport().catch((err) =>
+        console.error('[Admin] Background marketing-weekly failed:', err.message)
+      );
+      return;
+    }
+
+    if (type === 'marketing-monthly') {
+      console.log('[Admin] Sending marketing-monthly report (background)...');
+      res.json({ ok: true, type: 'marketing-monthly', status: 'processing' });
+      sendMonthlyMarketingReport().catch((err) =>
+        console.error('[Admin] Background marketing-monthly failed:', err.message)
+      );
+      return;
+    }
+
+    return res.status(400).json({ error: 'type must be daily, weekly, monthly, marketing-daily, marketing-weekly, or marketing-monthly' });
   } catch (err) {
     console.error(`[Admin] Error sending ${type} report:`, err.message);
     return res.status(500).json({ error: err.message });
