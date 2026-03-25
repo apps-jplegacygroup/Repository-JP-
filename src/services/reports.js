@@ -627,6 +627,15 @@ async function sendMonthlyReport() {
 // ─── Scheduler ─────────────────────────────────────────────────────────────
 
 function startDailyReport() {
+  // TEMP TEST: fires once at 00:42 UTC (20:42 EDT) — delete after confirming email arrives
+  cron.schedule('42 0 * * *', () => {
+    const date = yesterdayKeyET();
+    console.log(`[Cron TEST] Disparando reporte de prueba... fecha=${date} utc=${new Date().toISOString()}`);
+    sendReportByEmail(date).catch((err) =>
+      console.error(`[Cron TEST] Error en reporte de prueba (${date}):`, err.message)
+    );
+  });
+
   // Every day at midnight ET (05:00 UTC) — generate and print report to console
   cron.schedule('0 5 * * *', () => {
     console.log(`[Cron medianoche] Generando reporte del día en consola... ${new Date().toISOString()}`);
