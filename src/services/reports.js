@@ -627,35 +627,41 @@ async function sendMonthlyReport() {
 // ─── Scheduler ─────────────────────────────────────────────────────────────
 
 function startDailyReport() {
-  // Every day at midnight ET (05:00 UTC) — generate and print report
+  // Every day at midnight ET (05:00 UTC) — generate and print report to console
   cron.schedule('0 5 * * *', () => {
-    console.log(`[Cron] ⏰ Ejecutando: reporte diario consola — medianoche ET (05:00 UTC) — ${new Date().toISOString()}`);
+    console.log(`[Cron medianoche] Generando reporte del día en consola... ${new Date().toISOString()}`);
     printDailyReport();
   });
 
   // Every day at 8am EDT (12:00 UTC) — send daily report for YESTERDAY
   cron.schedule('0 12 * * *', () => {
     const date = yesterdayKeyET();
-    console.log(`[Cron] ⏰ Ejecutando: reporte diario email — 8am EDT (12:00 UTC) — fecha: ${date} — ${new Date().toISOString()}`);
-    sendReportByEmail(date);
+    console.log(`[Cron 8am] Iniciando reporte diario de ayer... fecha=${date} utc=${new Date().toISOString()}`);
+    sendReportByEmail(date).catch((err) =>
+      console.error(`[Cron 8am] Error enviando reporte diario (${date}):`, err.message)
+    );
   });
 
   // Every Monday at 8am EDT (12:00 UTC) — send weekly report (covers previous Mon–Sun)
   cron.schedule('0 12 * * 1', () => {
-    console.log(`[Cron] ⏰ Ejecutando: reporte semanal — lunes 8am EDT (12:00 UTC) — ${new Date().toISOString()}`);
-    sendWeeklyReport();
+    console.log(`[Cron semanal] Iniciando reporte semanal... utc=${new Date().toISOString()}`);
+    sendWeeklyReport().catch((err) =>
+      console.error('[Cron semanal] Error:', err.message)
+    );
   });
 
   // Every 1st of the month at 8am EDT (12:00 UTC) — send monthly report (covers previous month)
   cron.schedule('0 12 1 * *', () => {
-    console.log(`[Cron] ⏰ Ejecutando: reporte mensual — día 1 del mes 8am EDT (12:00 UTC) — ${new Date().toISOString()}`);
-    sendMonthlyReport();
+    console.log(`[Cron mensual] Iniciando reporte mensual... utc=${new Date().toISOString()}`);
+    sendMonthlyReport().catch((err) =>
+      console.error('[Cron mensual] Error:', err.message)
+    );
   });
 
   // Every day at 8:05am EDT (12:05 UTC) — audit: verify daily report was sent, retry if not
   cron.schedule('5 12 * * *', async () => {
     const date = yesterdayKeyET();
-    console.log(`[Cron] ⏰ Ejecutando: auditoría reporte diario — 8:05am EDT (12:05 UTC) — fecha: ${date} — ${new Date().toISOString()}`);
+    console.log(`[Cron auditoría] Verificando reporte de ${date}... utc=${new Date().toISOString()}`);
     const todayLog = getEmailLogForDate(date);
     const alreadySent = todayLog.some((e) => e.type === 'daily' && e.status === 'success');
     if (alreadySent) {
@@ -721,7 +727,12 @@ function startDailyReport() {
     }
   });
 
-  console.log('[Reports] Schedulers started: daily (midnight + 12:00 UTC/8am EDT + 12:05 UTC audit), weekly (Mon 12:00 UTC), monthly (1st 12:00 UTC).');
+  console.log('[Cron] ✅ Schedulers activos:');
+  console.log('[Cron]    0  5 * * *  → medianoche ET  — consola');
+  console.log('[Cron]    0 12 * * *  → 8:00am EDT     — email diario (AYER)');
+  console.log('[Cron]    5 12 * * *  → 8:05am EDT     — auditoría/reintento');
+  console.log('[Cron]    0 12 * * 1  → lunes 8am EDT  — email semanal');
+  console.log('[Cron]    0 12 1 * *  → día 1 8am EDT  — email mensual');
 }
 
 module.exports = {

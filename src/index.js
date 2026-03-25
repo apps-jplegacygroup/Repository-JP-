@@ -10,6 +10,35 @@ const adminRouter = require('./routes/admin');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ─── Env var validation ──────────────────────────────────────────────────────
+function checkEnvVars() {
+  const required = {
+    FUB_API_KEY:        process.env.FUB_API_KEY,
+    RESEND_API_KEY:     process.env.RESEND_API_KEY,
+    ANTHROPIC_API_KEY:  process.env.ANTHROPIC_API_KEY,
+  };
+  const optional = {
+    ADMIN_TOKEN:             process.env.ADMIN_TOKEN        || '(usando default jplegacy2026)',
+    RAILWAY_PUBLIC_DOMAIN:   process.env.RAILWAY_PUBLIC_DOMAIN || '(no configurado — self-ping desactivado)',
+  };
+
+  console.log('[Env] ── Variables de entorno ──────────────────────');
+  let allOk = true;
+  for (const [key, val] of Object.entries(required)) {
+    if (val) {
+      console.log(`[Env] ✅ ${key}: configurada (${val.slice(0, 8)}...)`);
+    } else {
+      console.error(`[Env] ❌ ${key}: NO CONFIGURADA — funcionalidad crítica desactivada`);
+      allOk = false;
+    }
+  }
+  for (const [key, val] of Object.entries(optional)) {
+    console.log(`[Env] ℹ️  ${key}: ${val}`);
+  }
+  console.log(`[Env] ───────────────────────────────────────────────`);
+  return allOk;
+}
+
 app.use(express.json());
 
 // ─── Health endpoint ────────────────────────────────────────────────────────
@@ -50,10 +79,10 @@ startDailyReport();
 
 app.listen(PORT, () => {
   console.log(`[Server] jp-legacy-agent running on port ${PORT}`);
-  console.log(`[Server] Webhook endpoint: POST /webhook/lead`);
-  console.log(`[Server] Report endpoint:  GET  /report`);
-  console.log(`[Server] Admin endpoint:   POST /admin/send-report?type=daily|weekly|monthly`);
+  console.log(`[Server] Webhook: POST /webhook/lead`);
+  console.log(`[Server] Report:  GET  /report`);
+  console.log(`[Server] Admin:   POST /admin/send-report?type=daily|weekly|monthly`);
+  checkEnvVars();
   startSelfPing();
-  // Print today's report on startup
   printDailyReport();
 });
