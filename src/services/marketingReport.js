@@ -58,8 +58,11 @@ function formatTimeET(isoTimestamp) {
 /** Parse 'YYYY-MM-DD' as midnight-UTC Date (safe for arithmetic) */
 function parseDate(str) {
   if (!str) return null;
-  const [y, m, d] = str.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d));
+  // Accept YYYY-MM-DD (possibly with time suffix like T00:00:00Z)
+  const match = String(str).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  const d = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return isNaN(d.getTime()) ? null : d;
 }
 
 function fmtDate(d) {
