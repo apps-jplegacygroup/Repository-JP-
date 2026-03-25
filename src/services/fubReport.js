@@ -560,19 +560,23 @@ async function fetchLeadsForDate(dateStr) {
 
     console.log('[Debug] Primeros 3 leads:', JSON.stringify(baseLeads.slice(0, 3)));
 
-    // Fetch notes + score each lead individually (errors isolated per lead)
-    const scored = await Promise.all(
-      baseLeads.map(async (lead) => {
-        try {
-          const notes = await fetchNotesForPerson(lead.id);
-          const { score, reason } = await scoreLeadFromNotes(lead, notes);
-          return { name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason };
-        } catch (leadErr) {
-          console.error(`[Debug] Error scoring lead "${lead.name}":`, leadErr.message);
-          return { name: lead.name, phone: lead.phone, source: lead.source, score: 1, scoreReason: 'Error en análisis' };
-        }
-      })
+    // Fetch all notes in parallel (fast, no rate limit concern)
+    const notesPerLead = await Promise.all(
+      baseLeads.map((lead) => fetchNotesForPerson(lead.id).catch(() => []))
     );
+
+    // Score sequentially to avoid Anthropic rate limits
+    const scored = [];
+    for (let i = 0; i < baseLeads.length; i++) {
+      const lead = baseLeads[i];
+      try {
+        const { score, reason } = await scoreLeadFromNotes(lead, notesPerLead[i]);
+        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason });
+      } catch (leadErr) {
+        console.error(`[Debug] Error scoring lead "${lead.name}":`, leadErr.message);
+        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, score: 1, scoreReason: 'Sin análisis' });
+      }
+    }
 
     return scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
   } catch (err) {
