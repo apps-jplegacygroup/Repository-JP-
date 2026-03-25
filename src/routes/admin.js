@@ -23,21 +23,30 @@ router.post('/send-report', async (req, res) => {
   try {
     if (type === 'daily') {
       const date = req.query.date || yesterdayKeyET();
-      console.log(`[Admin] Sending daily report for ${date}...`);
-      await sendReportByEmail(date);
-      return res.json({ ok: true, type: 'daily', date });
+      console.log(`[Admin] Sending daily report for ${date} (background)...`);
+      res.json({ ok: true, type: 'daily', date, status: 'processing' });
+      sendReportByEmail(date).catch((err) =>
+        console.error(`[Admin] Background daily report failed (${date}):`, err.message)
+      );
+      return;
     }
 
     if (type === 'weekly') {
-      console.log('[Admin] Sending weekly report...');
-      await sendWeeklyReport();
-      return res.json({ ok: true, type: 'weekly' });
+      console.log('[Admin] Sending weekly report (background)...');
+      res.json({ ok: true, type: 'weekly', status: 'processing' });
+      sendWeeklyReport().catch((err) =>
+        console.error('[Admin] Background weekly report failed:', err.message)
+      );
+      return;
     }
 
     if (type === 'monthly') {
-      console.log('[Admin] Sending monthly report...');
-      await sendMonthlyReport();
-      return res.json({ ok: true, type: 'monthly' });
+      console.log('[Admin] Sending monthly report (background)...');
+      res.json({ ok: true, type: 'monthly', status: 'processing' });
+      sendMonthlyReport().catch((err) =>
+        console.error('[Admin] Background monthly report failed:', err.message)
+      );
+      return;
     }
 
     return res.status(400).json({ error: 'type must be daily, weekly, or monthly' });
