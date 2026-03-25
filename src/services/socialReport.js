@@ -607,7 +607,7 @@ function metricsRowInline(items) {
 function topPostsSection(title, posts, viewKey = 'views') {
   if (!posts || posts.length === 0) return '';
   const rows = posts.map((p, i) => {
-    const text = (p.text || p.title || p.description || '(sin título)').slice(0, 55);
+    const text = (p.content || p.text || p.title || p.description || '(sin título)').slice(0, 55);
     const views = fmtNum(p[viewKey] || p.videoViews || p.reach || p.views || 0);
     const likes = fmtNum(p.likes || p.reactions || 0);
     const comments = fmtNum(p.comments || 0);
@@ -620,7 +620,7 @@ function topPostsSection(title, posts, viewKey = 'views') {
           <span style="color:#CCC;font-size:11px;margin-left:4px;">${text}${text.length >= 55 ? '…' : ''}</span>
         </div>
         <div style="color:#444;font-size:10px;font-family:Arial,sans-serif;margin-top:2px;">
-          👁 ${views} &nbsp;·&nbsp; ❤️ ${likes} &nbsp;·&nbsp; 💬 ${comments} &nbsp;·&nbsp; ↗️ ${shares}
+          👁 ${views} &nbsp;·&nbsp; ❤️ ${likes} &nbsp;·&nbsp; 💬 ${comments} &nbsp;·&nbsp; 💾 ${fmtNum(p.saved||0)} &nbsp;·&nbsp; ↗️ ${shares}
         </div>
       </td>
     </tr>`;
