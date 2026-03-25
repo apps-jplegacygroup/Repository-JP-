@@ -51,13 +51,14 @@ async function analyzeWithAI(text) {
 
   const client = new Anthropic({ apiKey });
 
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 300,
-    messages: [
-      {
-        role: 'user',
-        content: `You are a real estate lead scoring assistant. Analyze the following lead information and return ONLY a JSON object — no explanation, no extra text.
+  try {
+    const message = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: `You are a real estate lead scoring assistant. Analyze the following lead information and return ONLY a JSON object — no explanation, no extra text.
 
 Scoring criteria (set true if the lead clearly meets it):
 - hasBudget: mentions a specific budget or price (e.g. "500k", "$400,000", "300 mil")
@@ -73,11 +74,10 @@ Respond ONLY with this JSON (no extra text):
 
 Lead info:
 ${text}`,
-      },
-    ],
-  });
+        },
+      ],
+    });
 
-  try {
     const raw = message.content[0]?.text || '{}';
     const json = JSON.parse(raw.match(/\{.*\}/s)?.[0] || '{}');
     const breakdown = {
@@ -93,8 +93,9 @@ ${text}`,
       0
     );
     return { points, breakdown, reason: json.reason || '' };
-  } catch {
-    return { points: 0, breakdown: {}, reason: '' };
+  } catch (err) {
+    console.error('[Score] analyzeWithAI error:', err.message);
+    return { points: 0, breakdown: {}, reason: 'Error en análisis IA' };
   }
 }
 

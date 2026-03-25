@@ -58,4 +58,20 @@ router.get('/debug-fub', async (req, res) => {
   }
 });
 
+// GET /admin/debug-report?date=YYYY-MM-DD — returns scored leads as JSON (no email sent)
+router.get('/debug-report', async (req, res) => {
+  const date = req.query.date || yesterdayKeyET();
+  try {
+    const { fetchLeadsForDate } = require('../services/fubReport');
+    const leads = await fetchLeadsForDate(date);
+    return res.json({
+      date,
+      leadsCount: leads.length,
+      leads,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

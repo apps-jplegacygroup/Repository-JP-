@@ -514,9 +514,9 @@ async function fetchLeadsForDate(dateStr) {
   try {
     const { dayStart, dayEnd } = etDayBounds(dateStr);
 
-    console.log(`[FUBReport] Filtro ET para ${dateStr}:`);
-    console.log(`[FUBReport]   dayStart UTC: ${dayStart.toISOString()}`);
-    console.log(`[FUBReport]   dayEnd   UTC: ${dayEnd.toISOString()}`);
+    console.log('[Debug] Fecha del reporte:', dateStr);
+    console.log('[Debug] dayStart UTC:', dayStart.toISOString());
+    console.log('[Debug] dayEnd UTC:', dayEnd.toISOString());
 
     const people = [];
     let offset = 0;
@@ -532,15 +532,6 @@ async function fetchLeadsForDate(dateStr) {
 
       const batch = response.data?.people || [];
       if (batch.length === 0) break;
-
-      // Log first batch diagnostics
-      if (offset === 0) {
-        console.log(`[FUBReport]   FUB returned ${batch.length} people in first page`);
-        batch.slice(0, 3).forEach((p, i) => {
-          const name = [p.firstName, p.lastName].filter(Boolean).join(' ') || '—';
-          console.log(`[FUBReport]   lead[${i}]: ${name} — created: ${p.created}`);
-        });
-      }
       totalFetched += batch.length;
 
       const inDay = batch.filter((p) => {
@@ -556,7 +547,7 @@ async function fetchLeadsForDate(dateStr) {
       offset += limit;
     }
 
-    console.log(`[FUBReport]   Total fetched: ${totalFetched} | Matching day: ${people.length}`);
+    console.log('[Debug] Leads encontrados en FUB:', people.length);
 
     // Build base lead objects
     const baseLeads = people.map((p) => ({
@@ -567,12 +558,19 @@ async function fetchLeadsForDate(dateStr) {
       source: normalizeSource(p.source) || 'Sin fuente',
     }));
 
-    // Fetch notes + score each lead in parallel
+    console.log('[Debug] Primeros 3 leads:', JSON.stringify(baseLeads.slice(0, 3)));
+
+    // Fetch notes + score each lead individually (errors isolated per lead)
     const scored = await Promise.all(
       baseLeads.map(async (lead) => {
-        const notes = await fetchNotesForPerson(lead.id);
-        const { score, reason } = await scoreLeadFromNotes(lead, notes);
-        return { name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason };
+        try {
+          const notes = await fetchNotesForPerson(lead.id);
+          const { score, reason } = await scoreLeadFromNotes(lead, notes);
+          return { name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason };
+        } catch (leadErr) {
+          console.error(`[Debug] Error scoring lead "${lead.name}":`, leadErr.message);
+          return { name: lead.name, phone: lead.phone, source: lead.source, score: 1, scoreReason: 'Error en análisis' };
+        }
       })
     );
 
