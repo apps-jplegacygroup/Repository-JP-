@@ -3,6 +3,7 @@ const express = require('express');
 const https = require('https');
 const { startRetryQueue } = require('./services/retryQueue');
 const { startDailyReport, printDailyReport } = require('./services/reports');
+const { startMarketingReport } = require('./services/marketingReport');
 const webhookRouter = require('./routes/webhook');
 const reportRouter = require('./routes/report');
 const adminRouter = require('./routes/admin');
@@ -16,6 +17,8 @@ function checkEnvVars() {
     FUB_API_KEY:        process.env.FUB_API_KEY,
     RESEND_API_KEY:     process.env.RESEND_API_KEY,
     ANTHROPIC_API_KEY:  process.env.ANTHROPIC_API_KEY,
+    ASANA_TOKEN:        process.env.ASANA_TOKEN,
+    ASANA_PROJECT_ID:   process.env.ASANA_PROJECT_ID,
   };
   const optional = {
     ADMIN_TOKEN:             process.env.ADMIN_TOKEN        || '(usando default jplegacy2026)',
@@ -76,12 +79,13 @@ function startSelfPing() {
 // Start background jobs
 startRetryQueue();
 startDailyReport();
+startMarketingReport();
 
 app.listen(PORT, () => {
   console.log(`[Server] jp-legacy-agent running on port ${PORT}`);
   console.log(`[Server] Webhook: POST /webhook/lead`);
   console.log(`[Server] Report:  GET  /report`);
-  console.log(`[Server] Admin:   POST /admin/send-report?type=daily|weekly|monthly`);
+  console.log(`[Server] Admin:   POST /admin/send-report?type=daily|weekly|monthly|marketing`);
   checkEnvVars();
   startSelfPing();
   printDailyReport();
