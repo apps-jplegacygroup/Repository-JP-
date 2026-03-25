@@ -9,12 +9,10 @@ const TEAM = ['Nicole Zapata', 'Karen'];
 const TIPO_LABELS = ['Diseño', 'Video', 'Administrativo', 'Meeting'];
 
 const RECIPIENTS = [
-  'apps@jplegacygroup.com',
   'jorgeflorez@jplegacygroup.com',
   'paoladiaz@jplegacygroup.com',
-  'lucianamaalouf@jplegacygroup.com',
   'marketing@jplegacygroup.com',
-  'jeffersonbeltran@jplegacygroup.com',
+  'karen@getvau.com',
 ];
 
 const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
