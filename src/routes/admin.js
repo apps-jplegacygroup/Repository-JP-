@@ -5,6 +5,7 @@ const {
   sendWeeklyMarketingReport,
   sendMonthlyMarketingReport,
 } = require('../services/marketingReport');
+const { sendSocialReport } = require('../services/socialReport');
 const { debugFUBLeads } = require('../services/fubReport');
 const { yesterdayKeyET } = require('../utils/storage');
 
@@ -81,7 +82,16 @@ router.post('/send-report', async (req, res) => {
       return;
     }
 
-    return res.status(400).json({ error: 'type must be daily, weekly, monthly, marketing-daily, marketing-weekly, or marketing-monthly' });
+    if (type === 'social-weekly') {
+      console.log('[Admin] Sending social-weekly report (background)...');
+      res.json({ ok: true, type: 'social-weekly', status: 'processing' });
+      sendSocialReport().catch((err) =>
+        console.error('[Admin] Background social-weekly failed:', err.message)
+      );
+      return;
+    }
+
+    return res.status(400).json({ error: 'type must be daily, weekly, monthly, marketing-daily, marketing-weekly, marketing-monthly, or social-weekly' });
   } catch (err) {
     console.error(`[Admin] Error sending ${type} report:`, err.message);
     return res.status(500).json({ error: err.message });
