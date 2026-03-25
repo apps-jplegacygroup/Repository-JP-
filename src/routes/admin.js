@@ -82,16 +82,16 @@ router.post('/send-report', async (req, res) => {
       return;
     }
 
-    if (type === 'social-weekly') {
-      console.log('[Admin] Sending social-weekly report (background)...');
-      res.json({ ok: true, type: 'social-weekly', status: 'processing' });
+    if (type === 'social' || type === 'social-weekly') {
+      console.log('[Admin] Sending social report (background)...');
+      res.json({ ok: true, type: 'social', status: 'processing' });
       sendSocialReport().catch((err) =>
-        console.error('[Admin] Background social-weekly failed:', err.message)
+        console.error('[Admin] Background social report failed:', err.message)
       );
       return;
     }
 
-    return res.status(400).json({ error: 'type must be daily, weekly, monthly, marketing-daily, marketing-weekly, marketing-monthly, or social-weekly' });
+    return res.status(400).json({ error: 'type must be daily, weekly, monthly, marketing-daily, marketing-weekly, marketing-monthly, or social' });
   } catch (err) {
     console.error(`[Admin] Error sending ${type} report:`, err.message);
     return res.status(500).json({ error: err.message });

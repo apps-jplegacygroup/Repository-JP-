@@ -89,7 +89,7 @@ app.listen(PORT, () => {
   console.log(`[Server] jp-legacy-agent running on port ${PORT}`);
   console.log(`[Server] Webhook: POST /webhook/lead`);
   console.log(`[Server] Report:  GET  /report`);
-  console.log(`[Server] Admin:   POST /admin/send-report?type=daily|weekly|monthly|marketing-daily|marketing-weekly|marketing-monthly|social-weekly`);
+  console.log(`[Server] Admin:   POST /admin/send-report?type=daily|weekly|monthly|marketing-daily|marketing-weekly|marketing-monthly|social`);
   checkEnvVars();
   startSelfPing();
   printDailyReport();
