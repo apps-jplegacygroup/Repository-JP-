@@ -119,7 +119,7 @@ function DragCard({ photo, thumbUrl }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function SequenceEditor({ propertyId, initialPhotos, expandedPhotos, step5, onSaved }) {
+export default function SequenceEditor({ propertyId, initialPhotos, expandedPhotos, step5, onSaved, onContinue }) {
   // Build thumbMap
   const thumbMap = {};
   for (const ep of expandedPhotos || []) thumbMap[ep.id] = ep.thumbnailUrl;
@@ -283,16 +283,14 @@ export default function SequenceEditor({ propertyId, initialPhotos, expandedPhot
           <div>
             <p className="text-white font-medium">Secuencia guardada ✓</p>
             <p className="text-gray-500 text-sm mt-0.5">
-              Genera los prompts de movimiento Kling para cada foto en el orden definido.
+              Claude ya generó prompts de movimiento para cada foto. Edítalos y cópialos en Higgsfield.
             </p>
           </div>
           <button
-            disabled
-            title="Próximamente"
-            className="flex items-center gap-2 px-6 py-3 bg-amber-500/50 text-white/60 font-semibold rounded-xl text-sm cursor-not-allowed"
+            onClick={onContinue}
+            className="flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-white font-semibold rounded-xl text-sm transition-colors"
           >
             → Generar prompts Kling
-            <span className="text-[10px] bg-black/30 px-1.5 py-0.5 rounded">soon</span>
           </button>
         </div>
       )}

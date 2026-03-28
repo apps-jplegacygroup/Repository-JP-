@@ -8,6 +8,7 @@ import PhotoGrid from '../components/PhotoGrid.jsx';
 import AnalysisResults from '../components/AnalysisResults.jsx';
 import QAReview from '../components/QAReview.jsx';
 import SequenceEditor from '../components/SequenceEditor.jsx';
+import KlingPrompts from '../components/KlingPrompts.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -113,6 +114,7 @@ export default function PropertyDetail() {
     { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
     { key: 'qa', label: step4.status === 'done' ? `4 QA ✓` : hasQA ? `4 QA` : '4 QA' },
     { key: 'sequence', label: property?.pipeline?.step5_sequence?.status === 'done' ? '5 Sequence ✓' : '5 Sequence' },
+    { key: 'kling',    label: property?.pipeline?.step6_kling?.status === 'done' ? '6 Kling ✓' : '6 Kling' },
   ];
 
   async function handleFilesSelected(files) {
@@ -514,6 +516,32 @@ export default function PropertyDetail() {
               expandedPhotos={expandMeta.expandedPhotos || []}
               step5={step5}
               onSaved={handleRefresh}
+              onContinue={() => setActiveTab('kling')}
+            />
+          );
+        })()}
+
+        {/* ── Tab 6: Kling Prompts ──────────────────────────── */}
+        {activeTab === 'kling' && (() => {
+          const step5     = property?.pipeline?.step5_sequence || {};
+          const step6     = property?.pipeline?.step6_kling    || {};
+          const ordered   = step5.meta?.orderedPhotos || [];
+          if (ordered.length === 0) return (
+            <div className="text-center py-16 text-gray-500">
+              <p>El orden de secuencia no está guardado aún.</p>
+              <button onClick={() => setActiveTab('sequence')} className="mt-3 text-amber-500 hover:text-amber-400 text-sm underline">
+                Ir a Secuencia →
+              </button>
+            </div>
+          );
+          return (
+            <KlingPrompts
+              propertyId={id}
+              orderedPhotos={ordered}
+              expandedPhotos={expandMeta.expandedPhotos || []}
+              step6={step6}
+              onSaved={handleRefresh}
+              onContinue={() => setActiveTab('kling')}
             />
           );
         })()}
