@@ -36,6 +36,17 @@ app.use('/api/v1/auth/login', loginLimiter);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/properties', propertiesRoutes);
 
+// Temporary debug endpoint — remove after confirming env vars
+app.get('/debug/env', (_req, res) => {
+  res.json({
+    jwt_secret_exists: !!process.env.JWT_SECRET,
+    jorge_pass_exists: !!process.env.USER_JORGE_PASS,
+    jorge_pass_length: process.env.USER_JORGE_PASS?.length ?? 0,
+    karen_pass_exists: !!process.env.USER_KAREN_PASS,
+    marketing_pass_exists: !!process.env.USER_MARKETING_PASS,
+  });
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'video-pipeline-api', time: new Date().toISOString() });
