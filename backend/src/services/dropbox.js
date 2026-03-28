@@ -107,16 +107,15 @@ async function createFolder(folderPath) {
 
 // Test token validity — returns account email or throws
 async function testToken() {
-  const res = await axios.post(
-    `${API}/users/get_current_account`,
-    null,
-    {
-      headers: {
-        Authorization: `Bearer ${TOKEN()}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  );
+  const res = await axios({
+    method: 'post',
+    url: `${API}/users/get_current_account`,
+    data: {},
+    headers: {
+      Authorization: `Bearer ${TOKEN()}`,
+      'Content-Type': 'application/json',
+    },
+  });
   return res.data;
 }
 
