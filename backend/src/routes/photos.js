@@ -21,8 +21,9 @@ const upload = multer({
 
 router.use(requireAuth);
 
-// Base Dropbox path
-const DROPBOX_BASE = '/JP Legacy Pipeline';
+// Base Dropbox path — resolves to:
+// /JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING/00_To Organize (Inbox)/JP Legacy Pipeline/2026/[address]
+const DROPBOX_BASE = '/JP Legacy Pipeline/2026';
 
 // Sanitize property address for use as folder name
 function sanitizeFolderName(str) {
@@ -53,6 +54,7 @@ async function ensurePropertyFolders(property) {
   // Create from top down
   const toCreate = [
     '/JP Legacy Pipeline',
+    '/JP Legacy Pipeline/2026',
     paths.base,
     paths.raw,
     paths.expanded,
