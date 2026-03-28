@@ -283,10 +283,46 @@ export default function PropertyDetail() {
               </div>
             )}
 
-            {/* Failed state */}
-            {expandFailed && (
+            {/* Partial errors / credits exhausted */}
+            {!isExpanding && !expanding && expandMeta.errors?.length > 0 && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-amber-400 font-semibold">
+                      {expandMeta.errors.length} photo{expandMeta.errors.length > 1 ? 's' : ''} failed
+                      {expandMeta.creditsExhausted ? ' — Stability AI credits exhausted' : ''}
+                    </p>
+                    <p className="text-gray-400 text-sm mt-1">
+                      {expandMeta.creditsExhausted
+                        ? <>Add credits at <a href="https://platform.stability.ai/account/credits" target="_blank" rel="noreferrer" className="text-blue-400 underline">platform.stability.ai/account/credits</a>, then click Retry.</>
+                        : 'Click Retry to attempt the failed photos again.'}
+                    </p>
+                  </div>
+                  {user?.role === 'admin' && (
+                    <button
+                      onClick={handleExpand}
+                      disabled={expanding || isExpanding}
+                      className="shrink-0 flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
+                    >
+                      ↺ Retry {expandMeta.errors.length} photos
+                    </button>
+                  )}
+                </div>
+                <details className="text-xs text-gray-500">
+                  <summary className="cursor-pointer hover:text-gray-400">Show failed photos</summary>
+                  <ul className="mt-2 space-y-1 pl-2">
+                    {expandMeta.errors.map((e, i) => (
+                      <li key={i}><span className="text-red-400">{e.name}</span>: {e.error.slice(0, 120)}</li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            )}
+
+            {/* Hard failed state (0 expanded, not in-progress) */}
+            {expandFailed && (expandMeta.expandedPhotos?.length || 0) === 0 && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
-                Expansion failed: {expandMeta.error || 'Unknown error'}. Check Railway logs.
+                Expansion failed: {expandMeta.error || 'All photos failed'}. {expandMeta.creditsExhausted ? 'Add Stability AI credits and retry.' : 'Check Railway logs.'}
               </div>
             )}
 

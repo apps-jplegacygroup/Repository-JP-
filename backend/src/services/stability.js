@@ -1,5 +1,16 @@
 const sharp = require('sharp');
 
+// Custom error class so callers can detect 402 (no credits) vs retryable errors
+class StabilityError extends Error {
+  constructor(status, body) {
+    const msg = `Stability AI ${status}: ${body.slice(0, 400)}`;
+    super(msg);
+    this.status = status;
+    this.isCreditsError = status === 402;
+    this.isRetryable = status === 429 || status >= 500;
+  }
+}
+
 // Expand a single photo from 4:3 landscape → 9:16 portrait using Stability AI outpaint.
 //
 // Math:
@@ -20,40 +31,59 @@ async function expandPhoto(imageBuffer, prompt = '') {
     .jpeg({ quality: 90 })
     .toBuffer();
 
-  // Build multipart/form-data using Node 18 built-in FormData + Blob
-  const blob = new Blob([resized], { type: 'image/jpeg' });
-  const form = new FormData();
-  form.append('image', blob, 'photo.jpg');
-  form.append('up', '555');          // 555 + 810 + 555 = 1920 → 9:16
-  form.append('down', '555');
-  form.append('left', '0');
-  form.append('right', '0');
-  form.append('creativity', '0.5');  // balanced AI fill
-  form.append('output_format', 'jpeg');
-  if (prompt) form.append('prompt', prompt);
+  // Retry up to 3 times for rate limits / server errors (NOT for 402 — no credits)
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
 
-  const response = await fetch(
-    'https://api.stability.ai/v2beta/stable-image/edit/outpaint',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
-        Accept: 'image/*',
-      },
-      body: form,
-      // fetch has no default timeout — rely on Railway's 60s limit per request
-      // (background processing handles this at the route level)
-      signal: AbortSignal.timeout(120_000), // 2 min per image
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const blob = new Blob([resized], { type: 'image/jpeg' });
+    const form = new FormData();
+    form.append('image', blob, 'photo.jpg');
+    form.append('up', '555');          // 555 + 810 + 555 = 1920 → 9:16
+    form.append('down', '555');
+    form.append('left', '0');
+    form.append('right', '0');
+    form.append('creativity', '0.5');
+    form.append('output_format', 'jpeg');
+    if (prompt) form.append('prompt', prompt);
+
+    const response = await fetch(
+      'https://api.stability.ai/v2beta/stable-image/edit/outpaint',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
+          Accept: 'image/*',
+        },
+        body: form,
+        signal: AbortSignal.timeout(120_000), // 2 min per image
+      }
+    );
+
+    if (response.ok) {
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer); // 1080×1920 JPEG buffer
     }
-  );
 
-  if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Stability AI ${response.status}: ${text.slice(0, 400)}`);
+    lastErr = new StabilityError(response.status, text);
+
+    // 402 = no credits — stop immediately, don't retry
+    if (lastErr.isCreditsError) throw lastErr;
+
+    // 429 / 5xx — wait before retrying
+    if (lastErr.isRetryable && attempt < MAX_ATTEMPTS) {
+      const delay = attempt * 5000; // 5s, 10s
+      console.warn(`[stability] attempt ${attempt} failed (${response.status}), retrying in ${delay}ms…`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+
+    // 4xx other than 402/429 — not retryable
+    throw lastErr;
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer); // 1080×1920 JPEG buffer
+  throw lastErr;
 }
 
-module.exports = { expandPhoto };
+module.exports = { expandPhoto, StabilityError };

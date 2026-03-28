@@ -6,7 +6,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const Property = require('../models/property');
 const dropbox = require('../services/dropbox');
 const { analyzeAllPhotos } = require('../services/claude');
-const stability = require('../services/stability');
+const { expandPhoto, StabilityError } = require('../services/stability');
 
 const router = express.Router({ mergeParams: true });
 
@@ -154,6 +154,7 @@ router.delete('/:photoId', requireAdmin, (req, res) => {
 // POST /api/v1/properties/:id/photos/expand
 // Starts Stability AI outpaint (4:3 → 9:16) as a background job.
 // Returns 202 immediately; frontend polls GET /properties/:id for progress.
+// On retry: skips photos that already have an expandedPhoto entry (resume from where it left off).
 router.post('/expand', requireAdmin, async (req, res) => {
   const propertyId = req.params.id;
   const property = Property.getById(propertyId);
@@ -162,37 +163,64 @@ router.post('/expand', requireAdmin, async (req, res) => {
   const rawPhotos = property.pipeline.step1_upload?.meta?.photos || [];
   if (rawPhotos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
 
-  // Mark in_progress and return 202 immediately
+  // Carry over already-expanded photos so retries don't re-process them
+  const prevMeta   = property.pipeline.step2_stability?.meta || {};
+  const alreadyExp = prevMeta.expandedPhotos || [];
+  const alreadyIds = new Set(alreadyExp.map(e => e.id));
+  const pending    = rawPhotos.filter(p => !alreadyIds.has(p.id));
+
+  if (pending.length === 0) {
+    return res.status(400).json({ error: 'All photos already expanded. No pending photos to process.' });
+  }
+
+  // Mark in_progress; keep previous expanded photos in meta
   Property.updatePipelineStep(propertyId, 'step2_stability', {
     status: 'in_progress',
-    meta: { expandedPhotos: [], progress: 0, total: rawPhotos.length },
+    meta: {
+      expandedPhotos: alreadyExp,
+      errors: [],
+      progress: alreadyExp.length,
+      total: rawPhotos.length,
+    },
   });
-  res.status(202).json({ ok: true, total: rawPhotos.length });
+  res.status(202).json({ ok: true, total: rawPhotos.length, pending: pending.length, alreadyDone: alreadyExp.length });
 
   // ---- Background processing (after response sent) ----
   ;(async () => {
+    const axios = require('axios');
     const paths = buildPaths(property);
-    const expandedPhotos = [];
+    const expandedPhotos = [...alreadyExp]; // start with already-done photos
     const errors = [];
+    let creditsExhausted = false;
 
-    for (let i = 0; i < rawPhotos.length; i++) {
-      const photo = rawPhotos[i];
+    for (let i = 0; i < pending.length; i++) {
+      const photo = pending[i];
+
+      if (creditsExhausted) {
+        // 402 already hit — mark remaining as failed without calling API
+        errors.push({ name: photo.name, error: 'Skipped — Stability AI credits exhausted' });
+        Property.updatePipelineStep(propertyId, 'step2_stability', {
+          status: 'in_progress',
+          meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
+        });
+        continue;
+      }
+
       try {
-        console.log(`[expand] Processing ${i + 1}/${rawPhotos.length}: ${photo.name}`);
+        console.log(`[expand] Processing ${expandedPhotos.length + 1}/${rawPhotos.length}: ${photo.name}`);
 
         // 1. Download raw photo from Dropbox
         const link = await dropbox.getTemporaryLink(photo.dropboxPath);
-        const axios = require('axios');
         const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
 
-        // 2. Expand 4:3 → 9:16 with Stability AI
-        const expandedBuffer = await stability.expandPhoto(Buffer.from(imgRes.data));
+        // 2. Expand 4:3 → 9:16 with Stability AI (built-in retry for 429/5xx)
+        const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data));
 
         // 3. Upload expanded photo to Dropbox 02_fotos_expandidas
         const expandedPath = `${paths.expanded}/${photo.id}_9x16.jpg`;
         await dropbox.uploadFile(expandedBuffer, expandedPath);
         const thumbnailUrl = await dropbox.getTemporaryLink(expandedPath);
-        console.log(`[expand] Done ${photo.name} → ${expandedPath}`);
+        console.log(`[expand] ✓ ${photo.name}`);
 
         expandedPhotos.push({
           id: photo.id,
@@ -203,14 +231,20 @@ router.post('/expand', requireAdmin, async (req, res) => {
           expandedAt: new Date().toISOString(),
         });
       } catch (err) {
-        console.error(`[expand] Failed ${photo.name}:`, err.message);
-        errors.push({ name: photo.name, error: err.message });
+        console.error(`[expand] ✗ ${photo.name}: ${err.message}`);
+
+        if (err instanceof StabilityError && err.isCreditsError) {
+          creditsExhausted = true;
+          errors.push({ name: photo.name, error: 'Stability AI credits exhausted — purchase more at platform.stability.ai/account/credits' });
+        } else {
+          errors.push({ name: photo.name, error: err.message });
+        }
       }
 
-      // Update progress after each photo (success or failure)
+      // Update progress after each photo
       Property.updatePipelineStep(propertyId, 'step2_stability', {
         status: 'in_progress',
-        meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: i + 1, total: rawPhotos.length },
+        meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
       });
     }
 
@@ -223,14 +257,15 @@ router.post('/expand', requireAdmin, async (req, res) => {
         progress: rawPhotos.length,
         total: rawPhotos.length,
         expandedAt: new Date().toISOString(),
+        creditsExhausted,
       },
     });
-    console.log(`[expand] Finished. ${expandedPhotos.length}/${rawPhotos.length} expanded. Status: ${finalStatus}`);
+    console.log(`[expand] Done. ${expandedPhotos.length}/${rawPhotos.length} expanded. Errors: ${errors.length}. Status: ${finalStatus}`);
   })().catch(err => {
     console.error('[expand] Fatal background error:', err.message);
     Property.updatePipelineStep(propertyId, 'step2_stability', {
       status: 'failed',
-      meta: { error: err.message },
+      meta: { ...property.pipeline.step2_stability?.meta, error: err.message },
     });
   });
 });
