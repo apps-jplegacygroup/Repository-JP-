@@ -7,6 +7,7 @@ import PhotoUploader from '../components/PhotoUploader.jsx';
 import PhotoGrid from '../components/PhotoGrid.jsx';
 import AnalysisResults from '../components/AnalysisResults.jsx';
 import QAReview from '../components/QAReview.jsx';
+import SequenceEditor from '../components/SequenceEditor.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -497,51 +498,23 @@ export default function PropertyDetail() {
         {/* ── Tab 5: Sequence ───────────────────────────────── */}
         {activeTab === 'sequence' && (() => {
           const sequencePhotos = step4?.meta?.sequencePhotos || step4?.meta?.approvedPhotos || [];
-          return (
-            <div className="space-y-6">
-              <div className="bg-gray-900 rounded-2xl p-6">
-                <h2 className="text-white font-semibold text-lg mb-1">Paso 5 — Secuencia</h2>
-                <p className="text-gray-400 text-sm">
-                  {sequencePhotos.length} fotos aprobadas listas para ordenar y asignar prompts de Kling.
-                </p>
-              </div>
-
-              {sequencePhotos.length > 0 ? (
-                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                  {sequencePhotos.map((photo, idx) => {
-                    const thumbUrl = (expandMeta.expandedPhotos || []).find(e => e.id === photo.photoId)?.thumbnailUrl;
-                    return (
-                      <div key={photo.photoId} className="bg-gray-800 rounded-xl overflow-hidden">
-                        <div className="aspect-[9/16] relative">
-                          {thumbUrl
-                            ? <img src={thumbUrl} alt={photo.name} className="w-full h-full object-cover" loading="lazy" />
-                            : <div className="w-full h-full bg-gray-700 flex items-center justify-center text-gray-500 text-xs">No img</div>
-                          }
-                          <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">
-                            {idx + 1}
-                          </div>
-                        </div>
-                        <div className="p-2">
-                          <p className="text-gray-400 text-[10px] truncate capitalize">{photo.space?.replace(/_/g, ' ')}</p>
-                          <p className="text-amber-400 text-[10px]">★ {photo.wow_factor}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-center py-16 text-gray-500">
-                  <p>No hay fotos aprobadas aún.</p>
-                  <button onClick={() => setActiveTab('qa')} className="mt-3 text-amber-500 hover:text-amber-400 text-sm underline">
-                    Volver a QA Review →
-                  </button>
-                </div>
-              )}
-
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-amber-300 text-sm">
-                🚧 Paso 5 (ordenar secuencia + prompts Kling) en construcción.
-              </div>
+          const step5 = property?.pipeline?.step5_sequence || {};
+          if (sequencePhotos.length === 0) return (
+            <div className="text-center py-16 text-gray-500">
+              <p>No hay fotos aprobadas aún.</p>
+              <button onClick={() => setActiveTab('qa')} className="mt-3 text-amber-500 hover:text-amber-400 text-sm underline">
+                Volver a QA Review →
+              </button>
             </div>
+          );
+          return (
+            <SequenceEditor
+              propertyId={id}
+              initialPhotos={sequencePhotos}
+              expandedPhotos={expandMeta.expandedPhotos || []}
+              step5={step5}
+              onSaved={handleRefresh}
+            />
           );
         })()}
 
