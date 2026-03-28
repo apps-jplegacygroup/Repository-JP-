@@ -31,10 +31,12 @@ const loginLimiter = rateLimit({
 // Routes
 const authRoutes = require('./routes/auth');
 const propertiesRoutes = require('./routes/properties');
+const photosRoutes = require('./routes/photos');
 
 app.use('/api/v1/auth/login', loginLimiter);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/properties', propertiesRoutes);
+app.use('/api/v1/properties/:id/photos', photosRoutes);
 
 // Temporary debug endpoint — remove after confirming env vars
 app.get('/debug/env', (_req, res) => {
