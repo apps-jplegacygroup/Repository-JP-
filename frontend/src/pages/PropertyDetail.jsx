@@ -26,7 +26,8 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  const photos = property?.pipeline?.step1_upload?.meta?.photos || [];
+  const [orderedPhotos, setOrderedPhotos] = useState(null);
+  const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
   const analysisData = property?.pipeline?.step2_claude?.meta || {};
   const hasAnalysis = analysisData.selectedPhotos?.length > 0;
 
@@ -43,6 +44,7 @@ export default function PropertyDetail() {
       // Refresh property to get updated photos
       const updated = await client.get(`/properties/${id}`);
       setProperty(updated.data.property);
+      setOrderedPhotos(null); // reset manual order after new upload
     } catch (err) {
       setUploadResult({ error: err.response?.data?.error || 'Upload failed' });
     } finally {
@@ -147,7 +149,11 @@ export default function PropertyDetail() {
             )}
 
             {/* Photo grid */}
-            <PhotoGrid photos={photos} onDelete={user?.role === 'admin' ? handleDelete : null} />
+            <PhotoGrid
+              photos={photos}
+              onDelete={user?.role === 'admin' ? handleDelete : null}
+              onReorder={user?.role === 'admin' ? setOrderedPhotos : null}
+            />
 
             {/* Analyze button */}
             {photos.length > 0 && user?.role === 'admin' && (

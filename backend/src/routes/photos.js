@@ -152,8 +152,17 @@ router.delete('/:photoId', requireAdmin, (req, res) => {
 
 // POST /api/v1/properties/:id/photos/analyze
 router.post('/analyze', requireAdmin, async (req, res) => {
-  const property = Property.getById(req.params.id);
-  if (!property) return res.status(404).json({ error: 'Property not found' });
+  const propertyId = req.params.id;
+  console.log(`[analyze] req.params:`, JSON.stringify(req.params));
+  console.log(`[analyze] Looking for property ID: ${propertyId}`);
+  const all = Property.getAll();
+  console.log(`[analyze] Total properties in store: ${all.length}`, all.map(p => p.id));
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({
+    error: 'Property not found',
+    receivedId: propertyId,
+    availableIds: all.map(p => p.id),
+  });
 
   const photos = property.pipeline.step1_upload?.meta?.photos || [];
   if (photos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
