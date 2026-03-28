@@ -357,6 +357,90 @@ router.post('/analyze', requireAdmin, async (req, res) => {
   });
 });
 
+// POST /api/v1/properties/:id/photos/suggest-prompt/:photoId
+// Calls Claude Vision with the expanded image + current prompt + failed checks
+// and returns an improved Stability AI outpaint prompt.
+// Synchronous — Claude responds in <10s, well within Railway's 60s timeout.
+router.post('/suggest-prompt/:photoId', requireAdmin, async (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+  const { currentPrompt = '', failedChecks = [] } = req.body;
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set' });
+  }
+
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const photo = expandedPhotos.find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ error: 'Photo not found in expanded photos' });
+
+  try {
+    const axios = require('axios');
+
+    // Download + resize the expanded photo for Claude
+    const link = await dropbox.getTemporaryLink(photo.expandedPath);
+    const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+    const resized = await sharp(Buffer.from(imgRes.data))
+      .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    const base64Image = resized.toString('base64');
+
+    const { analyzePhoto: _unused, ...claudeModule } = require('../services/claude');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const claudeClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const checksText = failedChecks.length > 0
+      ? `Problemas detectados: ${failedChecks.join(', ')}.`
+      : 'Problemas generales de calidad en la expansión.';
+
+    const promptContext = currentPrompt
+      ? `Prompt actual usado (que no funcionó bien): "${currentPrompt}"`
+      : 'No se usó prompt personalizado — se usó el prompt por defecto.';
+
+    const response = await claudeClient.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
+          },
+          {
+            type: 'text',
+            text: `Eres un experto en prompts para Stability AI aplicados a fotografía inmobiliaria de lujo.
+
+Esta foto ha sido expandida de 4:3 a 9:16 (vertical) usando Stability AI outpaint y el resultado tiene problemas.
+
+${checksText}
+${promptContext}
+
+Analiza la imagen y genera un prompt mejorado para Stability AI outpaint que corrija específicamente esos problemas. El prompt debe:
+- Guiar a Stability AI para producir una continuación limpia y realista de la foto inmobiliaria
+- Mencionar elementos arquitectónicos o naturales que se vean en la foto para dar contexto
+- Lograr que la expansión se mezcle perfectamente con la imagen original
+- Ser específico para este espacio/ambiente (no genérico)
+
+Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin comillas, sin texto adicional. Máximo 2 oraciones.`,
+          },
+        ],
+      }],
+    });
+
+    const suggestedPrompt = response.content[0].text.trim();
+    console.log(`[suggest-prompt] ${photo.name}: "${suggestedPrompt.slice(0, 100)}"`);
+    res.json({ suggestedPrompt });
+
+  } catch (err) {
+    console.error(`[suggest-prompt] Error for ${photo.name}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/v1/properties/:id/photos/reexpand/:photoId
 // Re-expands a single previously-expanded photo with an optional custom prompt.
 // Returns 202 immediately; updates step2_stability + step4_qa in the background.

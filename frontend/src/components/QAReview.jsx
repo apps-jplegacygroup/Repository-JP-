@@ -86,6 +86,29 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
     setDecisions(prev => ({ ...prev, [photoId]: { ...prev[photoId], ...updates } }));
   }
 
+  async function handleSuggestPrompt(photo) {
+    const d = decisions[photo.photoId];
+    const failedChecks = Object.entries(d.checks || {})
+      .filter(([, v]) => !v)
+      .map(([k]) => k);
+    setDecision(photo.photoId, { suggestingPrompt: true, suggestError: null });
+    try {
+      const { data } = await client.post(
+        `/properties/${propertyId}/photos/suggest-prompt/${photo.photoId}`,
+        { currentPrompt: d.customPrompt, failedChecks }
+      );
+      setDecision(photo.photoId, {
+        customPrompt: data.suggestedPrompt,
+        suggestingPrompt: false,
+      });
+    } catch (err) {
+      setDecision(photo.photoId, {
+        suggestingPrompt: false,
+        suggestError: err.response?.data?.error || 'No se pudo generar el prompt',
+      });
+    }
+  }
+
   async function handleReexpand(photo) {
     const d = decisions[photo.photoId];
     setDecision(photo.photoId, { reexpanding: true, reexpandError: null });
@@ -142,9 +165,16 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
       }
       const approved = selected.filter(p => decisions[p.photoId]?.status === 'approved');
       const rejected = selected.filter(p => decisions[p.photoId]?.status === 'rejected');
+      // Only approved photos advance to the next step
       await client.patch(`/properties/${propertyId}/pipeline/step4_qa`, {
         status: 'done',
-        meta: { decisions: toSave, approvedPhotos: approved, rejectedPhotos: rejected, completedAt: new Date().toISOString() },
+        meta: {
+          decisions: toSave,
+          approvedPhotos: approved,
+          rejectedPhotos: rejected,
+          sequencePhotos: approved,   // photos that will advance to Step 5
+          completedAt: new Date().toISOString(),
+        },
       });
       await onRefresh?.();
       onContinue?.();
@@ -153,10 +183,13 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
   }
 
   // Stats
-  const approvedCount = selected.filter(p => decisions[p.photoId]?.status === 'approved').length;
-  const rejectedCount = selected.filter(p => decisions[p.photoId]?.status === 'rejected').length;
-  const pendingCount  = selected.length - approvedCount - rejectedCount;
-  const allApproved   = approvedCount === selected.length && selected.length > 0;
+  const approvedCount  = selected.filter(p => decisions[p.photoId]?.status === 'approved').length;
+  const rejectedCount  = selected.filter(p => decisions[p.photoId]?.status === 'rejected').length;
+  const pendingCount   = selected.length - approvedCount - rejectedCount;
+  const decidedCount   = approvedCount + rejectedCount;
+  const approvalRate   = selected.length > 0 ? approvedCount / selected.length : 0;
+  // Show "Continuar" when ≥80% approved OR when all photos have a decision (none pending)
+  const canContinue    = selected.length > 0 && (approvalRate >= 0.8 || pendingCount === 0);
   const anyReexpanding = Object.values(decisions).some(d => d.reexpanding);
 
   return (
@@ -181,7 +214,7 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
           >
             {saveOk ? '✓ Guardado' : saving ? 'Guardando…' : 'Guardar progreso'}
           </button>
-          {allApproved && (
+          {canContinue && (
             <button
               onClick={handleContinue}
               disabled={saving}
@@ -300,6 +333,7 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                 {/* Rejected: prompt editor + reexpand */}
                 {isRejected && (
                   <div className="space-y-2 pt-2 border-t border-gray-700 mt-auto">
+                    {/* Textarea */}
                     <textarea
                       value={d.customPrompt}
                       onChange={e => setDecision(photo.photoId, { customPrompt: e.target.value })}
@@ -307,9 +341,27 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                       placeholder="Prompt personalizado para re-expandir…"
                       className="w-full bg-gray-900 text-gray-300 text-[10px] p-2 rounded-lg border border-gray-600 resize-none focus:outline-none focus:border-amber-500 placeholder-gray-600 leading-relaxed"
                     />
+
+                    {/* AI suggest button */}
+                    <button
+                      onClick={() => handleSuggestPrompt(photo)}
+                      disabled={d.suggestingPrompt || d.reexpanding}
+                      className="w-full py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      {d.suggestingPrompt ? (
+                        <><SpinnerIcon /> Generando prompt…</>
+                      ) : (
+                        <>✨ Sugerir prompt con IA</>
+                      )}
+                    </button>
+                    {d.suggestError && (
+                      <p className="text-red-400 text-[10px] leading-tight">{d.suggestError}</p>
+                    )}
+
+                    {/* Re-expand button */}
                     <button
                       onClick={() => handleReexpand(photo)}
-                      disabled={d.reexpanding}
+                      disabled={d.reexpanding || d.suggestingPrompt}
                       className="w-full py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {d.reexpanding ? (
@@ -330,14 +382,18 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
       </div>
 
       {/* ── Bottom continue bar (repeat for convenience) ─────── */}
-      {allApproved && selected.length > 0 && (
+      {canContinue && (
         <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-2xl p-5">
           <div>
             <p className="text-green-400 font-semibold">
-              Todas las fotos aprobadas ({approvedCount}/{selected.length})
+              {pendingCount === 0
+                ? `Todas las fotos revisadas — ${approvedCount} aprobadas, ${rejectedCount} rechazadas`
+                : `${approvedCount} de ${selected.length} fotos aprobadas (${Math.round(approvalRate * 100)}%)`}
             </p>
             <p className="text-gray-400 text-sm mt-0.5">
-              Listo para continuar al paso de Secuencia.
+              {rejectedCount > 0
+                ? `Las ${rejectedCount} foto${rejectedCount > 1 ? 's' : ''} rechazada${rejectedCount > 1 ? 's' : ''} no irán al tour.`
+                : 'Listo para continuar al paso de Secuencia.'}
             </p>
           </div>
           <button
