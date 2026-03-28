@@ -105,18 +105,18 @@ async function createFolder(folderPath) {
   }
 }
 
-// Test token validity — returns account email or throws
+// Test token validity using check/user (minimal scope required)
 async function testToken() {
   const res = await axios({
     method: 'post',
-    url: `${API}/users/get_current_account`,
-    data: {},
+    url: `${API}/check/user`,
+    data: { query: 'ping' },
     headers: {
       Authorization: `Bearer ${TOKEN()}`,
       'Content-Type': 'application/json',
     },
   });
-  return res.data;
+  return res.data; // returns { result: 'ping' } if token is valid
 }
 
 module.exports = { uploadFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken };
