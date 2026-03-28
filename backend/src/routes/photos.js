@@ -7,7 +7,7 @@ const Property = require('../models/property');
 const dropbox = require('../services/dropbox');
 const { analyzeAllPhotos } = require('../services/claude');
 
-const router = express.Router({ mergeParams: true }); // to access :id from parent
+const router = express.Router({ mergeParams: true });
 
 // Multer: memory storage, max 100 files, 20MB each
 const upload = multer({
@@ -21,27 +21,72 @@ const upload = multer({
 
 router.use(requireAuth);
 
+// Base Dropbox path
+const DROPBOX_BASE = '/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING/Video Pipeline';
+
+// Sanitize property address for use as folder name
+function sanitizeFolderName(str) {
+  return str
+    .replace(/[<>:"/\\|?*]/g, '')  // remove invalid chars
+    .replace(/\s+/g, ' ')           // collapse spaces
+    .trim()
+    .slice(0, 80);                  // max 80 chars
+}
+
+// Build folder paths for a property
+function buildPaths(property) {
+  const folder = sanitizeFolderName(property.address || property.id);
+  const base = `${DROPBOX_BASE}/${folder}`;
+  return {
+    base,
+    raw:       `${base}/01_fotos_raw`,
+    expanded:  `${base}/02_fotos_expandidas`,
+    approved:  `${base}/03_fotos_aprobadas`,
+    clips:     `${base}/04_clips`,
+    output:    `${base}/05_output_final`,
+  };
+}
+
+// Ensure all 5 subfolders exist in Dropbox
+async function ensurePropertyFolders(property) {
+  const paths = buildPaths(property);
+  // Create from top down
+  const toCreate = [
+    '/JP Legacy Group',
+    '/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING',
+    '/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING/Video Pipeline',
+    paths.base,
+    paths.raw,
+    paths.expanded,
+    paths.approved,
+    paths.clips,
+    paths.output,
+  ];
+  for (const p of toCreate) {
+    await dropbox.createFolder(p);
+  }
+  return paths;
+}
+
 // POST /api/v1/properties/:id/photos/upload
-// Accepts up to 100 images (multipart field: "photos")
 router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, res) => {
   const property = Property.getById(req.params.id);
   if (!property) return res.status(404).json({ error: 'Property not found' });
   if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
 
-  const folderPath = `/JP Legacy Pipeline/${req.params.id}/raw`;
-
+  let paths;
   try {
-    await dropbox.createFolder(`/JP Legacy Pipeline`);
-    await dropbox.createFolder(`/JP Legacy Pipeline/${req.params.id}`);
-    await dropbox.createFolder(folderPath);
-  } catch (e) { /* folders may already exist */ }
+    paths = await ensurePropertyFolders(property);
+  } catch (e) {
+    return res.status(500).json({ error: `Dropbox folder creation failed: ${e.message}` });
+  }
 
   const uploaded = [];
   const errors = [];
 
   for (const file of req.files) {
     try {
-      // Validate resolution with sharp
+      // Validate resolution
       const meta = await sharp(file.buffer).metadata();
       const minDim = 1000;
       if (meta.width < minDim || meta.height < minDim) {
@@ -50,8 +95,8 @@ router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, re
       }
 
       const photoId = uuidv4();
-      const ext = file.originalname.split('.').pop().toLowerCase();
-      const dropboxPath = `${folderPath}/${photoId}.${ext}`;
+      const ext = file.originalname.split('.').pop().toLowerCase() || 'jpg';
+      const dropboxPath = `${paths.raw}/${photoId}.${ext}`;
 
       await dropbox.uploadFile(file.buffer, dropboxPath);
       const thumbnailUrl = await dropbox.getTemporaryLink(dropboxPath);
@@ -72,14 +117,13 @@ router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, re
     }
   }
 
-  // Merge with existing photos in step1 meta
+  // Merge with existing photos
   const existing = property.pipeline.step1_upload?.meta?.photos || [];
   const allPhotos = [...existing, ...uploaded];
 
-  const status = allPhotos.length > 0 ? 'in_progress' : 'pending';
   Property.updatePipelineStep(req.params.id, 'step1_upload', {
-    status,
-    meta: { photos: allPhotos, dropboxFolder: folderPath },
+    status: allPhotos.length > 0 ? 'in_progress' : 'pending',
+    meta: { photos: allPhotos, dropboxFolders: paths },
   });
 
   res.json({ uploaded: uploaded.length, errors, photos: allPhotos });
@@ -107,7 +151,6 @@ router.delete('/:photoId', requireAdmin, (req, res) => {
 });
 
 // POST /api/v1/properties/:id/photos/analyze
-// Fetches all uploaded photos from Dropbox, runs Claude Vision, stores results
 router.post('/analyze', requireAdmin, async (req, res) => {
   const property = Property.getById(req.params.id);
   if (!property) return res.status(404).json({ error: 'Property not found' });
@@ -115,33 +158,25 @@ router.post('/analyze', requireAdmin, async (req, res) => {
   const photos = property.pipeline.step1_upload?.meta?.photos || [];
   if (photos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
 
-  // Mark step1 as done, step2 as in_progress
-  Property.updatePipelineStep(req.params.id, 'step1_upload', { status: 'done', meta: property.pipeline.step1_upload.meta });
+  Property.updatePipelineStep(req.params.id, 'step1_upload', {
+    status: 'done',
+    meta: property.pipeline.step1_upload.meta,
+  });
   Property.updatePipelineStep(req.params.id, 'step2_claude', { status: 'in_progress', meta: {} });
 
-  // Stream response — analysis takes time
-  res.setHeader('Content-Type', 'application/json');
-
   try {
-    // Download photos from Dropbox as base64
     const axios = require('axios');
     const photoData = await Promise.all(
       photos.map(async (photo) => {
         const link = await dropbox.getTemporaryLink(photo.dropboxPath);
         const imgRes = await axios.get(link, { responseType: 'arraybuffer' });
         const base64 = Buffer.from(imgRes.data).toString('base64');
-        return {
-          id: photo.id,
-          name: photo.name,
-          base64,
-          mediaType: photo.mediaType || 'image/jpeg',
-        };
+        return { id: photo.id, name: photo.name, base64, mediaType: photo.mediaType || 'image/jpeg' };
       })
     );
 
     const { all, selected } = await analyzeAllPhotos(photoData);
 
-    // Save analysis to step2 meta
     Property.updatePipelineStep(req.params.id, 'step2_claude', {
       status: 'done',
       meta: {
@@ -153,12 +188,7 @@ router.post('/analyze', requireAdmin, async (req, res) => {
       },
     });
 
-    res.json({
-      ok: true,
-      totalAnalyzed: all.length,
-      totalSelected: selected.length,
-      selected,
-    });
+    res.json({ ok: true, totalAnalyzed: all.length, totalSelected: selected.length, selected });
   } catch (err) {
     Property.updatePipelineStep(req.params.id, 'step2_claude', {
       status: 'failed',
