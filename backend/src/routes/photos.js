@@ -682,7 +682,7 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
     const axios  = require('axios');
     const paths  = buildPaths(property);
     const clips  = [...alreadyDone];
-    const errors = [...(prevMeta.errors || [])];
+    const errors = []; // Start fresh each run — stale errors from previous runs are discarded
 
     for (let i = 0; i < pending.length; i++) {
       const photo = pending[i];

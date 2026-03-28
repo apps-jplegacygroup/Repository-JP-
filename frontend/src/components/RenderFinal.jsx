@@ -48,22 +48,26 @@ export default function RenderFinal({ propertyId, step8, doneClipCount, onRefres
     setStarting(true);
     try {
       await client.post(`/properties/${propertyId}/render`);
-      await onRefresh?.();
     } catch (err) {
       alert(err.response?.data?.error || 'Error al iniciar el render');
       setStarting(false);
+      return;
     }
+    // Refresh outside the try-catch so a transient refresh error
+    // doesn't mask a successfully-started render.
+    onRefresh?.().catch(() => {});
   }
 
   async function handleRetry() {
     setStarting(true);
     try {
       await client.post(`/properties/${propertyId}/render`);
-      await onRefresh?.();
     } catch (err) {
       alert(err.response?.data?.error || 'Error al reintentar el render');
       setStarting(false);
+      return;
     }
+    onRefresh?.().catch(() => {});
   }
 
   return (

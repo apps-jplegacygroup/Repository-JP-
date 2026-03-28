@@ -1,0 +1,4 @@
+# Install system ffmpeg alongside Node.js so fluent-ffmpeg can find it in PATH.
+# This supplements (but does not replace) the ffmpeg-static npm package.
+[phases.setup]
+aptPkgs = ["ffmpeg"]

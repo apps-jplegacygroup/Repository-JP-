@@ -1,10 +1,23 @@
 const ffmpeg     = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
 const path       = require('path');
 const fs         = require('fs');
 const os         = require('os');
 
-ffmpeg.setFfmpegPath(ffmpegPath);
+// Prefer system ffmpeg (installed via nixpacks.toml aptPkgs).
+// Fall back to ffmpeg-static bundled binary if system ffmpeg is not in PATH.
+try {
+  const { execSync } = require('child_process');
+  execSync('ffmpeg -version', { stdio: 'ignore' });
+  console.log('[render] Using system ffmpeg from PATH');
+} catch {
+  try {
+    const ffmpegStatic = require('ffmpeg-static');
+    ffmpeg.setFfmpegPath(ffmpegStatic);
+    console.log('[render] System ffmpeg not found, using ffmpeg-static:', ffmpegStatic);
+  } catch {
+    console.warn('[render] Neither system ffmpeg nor ffmpeg-static found — render will fail');
+  }
+}
 
 const CROSSFADE_DURATION  = 0.5;  // seconds
 const CLIP_DURATION       = 5;    // each Higgsfield clip
