@@ -68,7 +68,9 @@ export default function PropertyDetail() {
         pollRef.current = null;
       }
     };
-  }, [property?.pipeline?.step2_stability?.status, property?.pipeline?.step3_claude?.status]);
+  // Also depend on local expanding/analyzing so the interval starts even before
+  // the first property refresh confirms in_progress on the server
+  }, [property?.pipeline?.step2_stability?.status, property?.pipeline?.step3_claude?.status, expanding, analyzing]);
 
   // Derived state
   const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
@@ -130,10 +132,13 @@ export default function PropertyDetail() {
 
   async function handleExpand() {
     setExpanding(true);
+    setActiveTab('expand');
     try {
       await client.post(`/properties/${id}/photos/expand`);
-      // 202 accepted — polling useEffect handles updates
-      setActiveTab('expand');
+      // 202 accepted — immediately refresh property so step2_stability.status
+      // becomes 'in_progress', which triggers the polling useEffect to start
+      const { data } = await client.get(`/properties/${id}`);
+      setProperty(data.property);
     } catch (err) {
       alert(err.response?.data?.error || 'Expand failed to start');
       setExpanding(false);
@@ -142,14 +147,15 @@ export default function PropertyDetail() {
 
   async function handleAnalyze() {
     setAnalyzing(true);
+    setActiveTab('analysis');
     try {
       await client.post(`/properties/${id}/photos/analyze`);
-      const updated = await client.get(`/properties/${id}`);
-      setProperty(updated.data.property);
-      setActiveTab('analysis');
+      // 202 accepted — immediately refresh so step3_claude.status = 'in_progress'
+      // which triggers the polling loop
+      const { data } = await client.get(`/properties/${id}`);
+      setProperty(data.property);
     } catch (err) {
       alert(err.response?.data?.error || 'Analysis failed');
-    } finally {
       setAnalyzing(false);
     }
   }
