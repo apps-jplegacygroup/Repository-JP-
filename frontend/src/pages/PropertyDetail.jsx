@@ -6,6 +6,7 @@ import PipelineStatus from '../components/PipelineStatus.jsx';
 import PhotoUploader from '../components/PhotoUploader.jsx';
 import PhotoGrid from '../components/PhotoGrid.jsx';
 import AnalysisResults from '../components/AnalysisResults.jsx';
+import QAReview from '../components/QAReview.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -86,6 +87,17 @@ export default function PropertyDetail() {
   const analysisFailed = step3.status === 'failed';
   const hasAnalysis = (analysisData.selectedPhotos?.length || 0) > 0;
 
+  const step4 = property?.pipeline?.step4_qa || {};
+  const hasQA = step4.status === 'in_progress' || step4.status === 'done';
+
+  // Join selected photos with their expanded thumbnailUrls
+  const selectedWithThumbs = hasAnalysis
+    ? (analysisData.selectedPhotos || []).map(p => ({
+        ...p,
+        thumbnailUrl: (expandMeta.expandedPhotos || []).find(e => e.id === p.photoId)?.thumbnailUrl || null,
+      }))
+    : [];
+
   // Tab labels
   const tabs = [
     { key: 'upload', label: `1 Upload (${photos.length})` },
@@ -98,6 +110,7 @@ export default function PropertyDetail() {
         : '2 Expand 9:16',
     },
     { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
+    { key: 'qa', label: step4.status === 'done' ? `4 QA ✓` : hasQA ? `4 QA` : '4 QA' },
   ];
 
   async function handleFilesSelected(files) {
@@ -143,6 +156,13 @@ export default function PropertyDetail() {
       alert(err.response?.data?.error || 'Expand failed to start');
       setExpanding(false);
     }
+  }
+
+  async function handleRefresh() {
+    try {
+      const { data } = await client.get(`/properties/${id}`);
+      setProperty(data.property);
+    } catch (_) {}
   }
 
   async function handleAnalyze() {
@@ -442,16 +462,59 @@ export default function PropertyDetail() {
             )}
 
             {hasAnalysis && (
-              <AnalysisResults
-                selected={analysisData.selectedPhotos}
-                all={analysisData.analysisResults}
-              />
+              <>
+                <AnalysisResults
+                  selected={analysisData.selectedPhotos}
+                  all={analysisData.analysisResults}
+                />
+                {/* Continue to QA button */}
+                {user?.role === 'admin' && (
+                  <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5 mt-6">
+                    <div>
+                      <p className="text-white font-medium">{analysisData.totalSelected} fotos seleccionadas por Claude</p>
+                      <p className="text-gray-500 text-sm mt-0.5">Revisar y aprobar cada foto antes de continuar</p>
+                    </div>
+                    <button
+                      onClick={() => setActiveTab('qa')}
+                      className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
+                    >
+                      → Ir a QA Review
+                    </button>
+                  </div>
+                )}
+              </>
             )}
 
             {!isAnalyzing && !analysisFailed && !hasAnalysis && (
               <div className="text-center py-20 text-gray-500">
                 <p>No analysis yet.</p>
                 <p className="text-sm mt-1">Go to the Expand tab and click "Analyze with Claude Vision".</p>
+              </div>
+            )}
+          </div>
+        )}
+        {/* ── Tab 4: QA Review ──────────────────────────────── */}
+        {activeTab === 'qa' && (
+          <div>
+            {hasAnalysis ? (
+              <QAReview
+                propertyId={id}
+                selected={selectedWithThumbs}
+                expandedPhotos={expandMeta.expandedPhotos || []}
+                step4={step4}
+                onRefresh={handleRefresh}
+                onContinue={() => setActiveTab('qa')}
+              />
+            ) : (
+              <div className="text-center py-20 text-gray-500">
+                <p>No hay análisis aún.</p>
+                <p className="text-sm mt-1">Completa los pasos de Expand y Analysis primero.</p>
+                <button
+                  onClick={() => setActiveTab('analysis')}
+                  className="mt-4 text-amber-500 hover:text-amber-400 text-sm underline"
+                >
+                  Ir a Analysis →
+                </button>
               </div>
             )}
           </div>

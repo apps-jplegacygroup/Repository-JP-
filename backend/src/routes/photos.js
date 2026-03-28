@@ -357,4 +357,78 @@ router.post('/analyze', requireAdmin, async (req, res) => {
   });
 });
 
+// POST /api/v1/properties/:id/photos/reexpand/:photoId
+// Re-expands a single previously-expanded photo with an optional custom prompt.
+// Returns 202 immediately; updates step2_stability + step4_qa in the background.
+router.post('/reexpand/:photoId', requireAdmin, async (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+  const { prompt = '' } = req.body;
+
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const photo = expandedPhotos.find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ error: 'Photo not found in expanded photos' });
+
+  // Mark reexpanding=true in step4_qa decisions so frontend can show spinner
+  const step4Meta = property.pipeline.step4_qa?.meta || {};
+  const decisions = { ...(step4Meta.decisions || {}) };
+  decisions[photoId] = { ...(decisions[photoId] || {}), reexpanding: true, reexpandError: null };
+  Property.updatePipelineStep(propertyId, 'step4_qa', {
+    status: property.pipeline.step4_qa?.status || 'in_progress',
+    meta: { ...step4Meta, decisions },
+  });
+
+  res.status(202).json({ ok: true, photoId });
+
+  // ---- Background processing ----
+  ;(async () => {
+    const axios = require('axios');
+    const paths = buildPaths(property);
+
+    // Download the original raw photo (not the expanded one) to re-expand fresh
+    const link = await dropbox.getTemporaryLink(photo.originalPath);
+    const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+
+    // Re-expand with the new custom prompt
+    const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data), prompt);
+
+    // Overwrite the existing expanded path in Dropbox
+    await dropbox.uploadFile(expandedBuffer, photo.expandedPath);
+    const thumbnailUrl = await dropbox.getTemporaryLink(photo.expandedPath);
+
+    // Update step2_stability: replace the thumbnail URL for this photo
+    const prop1 = Property.getById(propertyId);
+    const updatedExpanded = (prop1.pipeline.step2_stability?.meta?.expandedPhotos || []).map(ep =>
+      ep.id === photoId ? { ...ep, thumbnailUrl, reexpandedAt: new Date().toISOString() } : ep
+    );
+    Property.updatePipelineStep(propertyId, 'step2_stability', {
+      status: prop1.pipeline.step2_stability?.status || 'done',
+      meta: { ...prop1.pipeline.step2_stability?.meta, expandedPhotos: updatedExpanded },
+    });
+
+    // Mark reexpanding=false in step4_qa decisions
+    const prop2 = Property.getById(propertyId);
+    const m2 = prop2.pipeline.step4_qa?.meta || {};
+    const d2 = { ...(m2.decisions || {}) };
+    d2[photoId] = { ...(d2[photoId] || {}), reexpanding: false, reexpandError: null, reexpandedAt: new Date().toISOString() };
+    Property.updatePipelineStep(propertyId, 'step4_qa', {
+      status: prop2.pipeline.step4_qa?.status || 'in_progress',
+      meta: { ...m2, decisions: d2 },
+    });
+    console.log(`[reexpand] ✓ ${photo.name}`);
+  })().catch(err => {
+    console.error(`[reexpand] ✗ ${photo.name}: ${err.message}`);
+    const prop = Property.getById(propertyId);
+    const m = prop.pipeline.step4_qa?.meta || {};
+    const d = { ...(m.decisions || {}) };
+    d[photoId] = { ...(d[photoId] || {}), reexpanding: false, reexpandError: err.message };
+    Property.updatePipelineStep(propertyId, 'step4_qa', {
+      status: prop.pipeline.step4_qa?.status || 'in_progress',
+      meta: { ...m, decisions: d },
+    });
+  });
+});
+
 module.exports = router;
