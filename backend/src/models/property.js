@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-const DATA_FILE = path.join(__dirname, '../data/properties.json');
+// DATA_DIR env var = Railway persistent volume mount path (e.g. /data)
+// Falls back to local src/data/ for development
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../data');
+const DATA_FILE = path.join(DATA_DIR, 'properties.json');
 
 // Ensure data directory and file exist
 function ensureStore() {
