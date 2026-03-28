@@ -5,34 +5,54 @@ const TOKEN = () => process.env.DROPBOX_TOKEN;
 const CONTENT_API = 'https://content.dropboxapi.com/2';
 const API = 'https://api.dropboxapi.com/2';
 
+// Helper: extract readable Dropbox error
+function dropboxError(err) {
+  const status = err.response?.status;
+  const data = err.response?.data;
+  const msg = typeof data === 'string' ? data : JSON.stringify(data);
+  const enhanced = new Error(`Dropbox ${status}: ${msg}`);
+  enhanced.dropboxStatus = status;
+  enhanced.dropboxData = data;
+  throw enhanced;
+}
+
 // Upload a file buffer to Dropbox
 // Returns: { path_display, id, size }
 async function uploadFile(buffer, dropboxPath) {
-  const res = await axios.post(`${CONTENT_API}/files/upload`, buffer, {
-    headers: {
-      Authorization: `Bearer ${TOKEN()}`,
-      'Content-Type': 'application/octet-stream',
-      'Dropbox-API-Arg': JSON.stringify({
-        path: dropboxPath,
-        mode: 'overwrite',
-        autorename: false,
-        mute: true,
-      }),
-    },
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-  });
-  return res.data;
+  try {
+    const res = await axios.post(`${CONTENT_API}/files/upload`, buffer, {
+      headers: {
+        Authorization: `Bearer ${TOKEN()}`,
+        'Content-Type': 'application/octet-stream',
+        'Dropbox-API-Arg': JSON.stringify({
+          path: dropboxPath,
+          mode: { '.tag': 'overwrite' },
+          autorename: false,
+          mute: true,
+          strict_conflict: false,
+        }),
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    return res.data;
+  } catch (err) {
+    dropboxError(err);
+  }
 }
 
 // Get a temporary (4-hour) direct download link for a file
 async function getTemporaryLink(dropboxPath) {
-  const res = await axios.post(
-    `${API}/files/get_temporary_link`,
-    { path: dropboxPath },
-    { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
-  );
-  return res.data.link;
+  try {
+    const res = await axios.post(
+      `${API}/files/get_temporary_link`,
+      { path: dropboxPath },
+      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+    );
+    return res.data.link;
+  } catch (err) {
+    dropboxError(err);
+  }
 }
 
 // Create a shared link (permanent preview URL)
@@ -43,29 +63,31 @@ async function getSharedLink(dropboxPath) {
       { path: dropboxPath, settings: { requested_visibility: 'public' } },
       { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
     );
-    // Convert to direct dl link
     return res.data.url.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '');
   } catch (err) {
-    // If already shared, fetch existing link
     if (err.response?.data?.error?.['.tag'] === 'shared_link_already_exists') {
       const existing = err.response.data.error.shared_link_already_exists?.metadata?.url;
       if (existing) return existing.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '');
     }
-    throw err;
+    dropboxError(err);
   }
 }
 
 // List files in a folder
 async function listFolder(folderPath) {
-  const res = await axios.post(
-    `${API}/files/list_folder`,
-    { path: folderPath, recursive: false },
-    { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
-  );
-  return res.data.entries;
+  try {
+    const res = await axios.post(
+      `${API}/files/list_folder`,
+      { path: folderPath, recursive: false },
+      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+    );
+    return res.data.entries;
+  } catch (err) {
+    dropboxError(err);
+  }
 }
 
-// Create folder (ignore if exists)
+// Create folder (silently ignore if already exists)
 async function createFolder(folderPath) {
   try {
     await axios.post(
@@ -74,9 +96,28 @@ async function createFolder(folderPath) {
       { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
-    if (err.response?.data?.error?.['.tag'] !== 'path' ) throw err;
-    // folder already exists — ok
+    const tag = err.response?.data?.error?.['.tag'];
+    const conflictTag = err.response?.data?.error?.path?.['.tag'];
+    if (tag === 'path' && conflictTag === 'conflict') return; // already exists
+    if (err.message?.includes('conflict')) return;
+    // ignore folder already exists errors silently
+    console.warn(`[dropbox] createFolder ${folderPath}:`, err.response?.data || err.message);
   }
 }
 
-module.exports = { uploadFile, getTemporaryLink, getSharedLink, listFolder, createFolder };
+// Test token validity — returns account email or throws
+async function testToken() {
+  const res = await axios.post(
+    `${API}/users/get_current_account`,
+    null,
+    {
+      headers: {
+        Authorization: `Bearer ${TOKEN()}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+  return res.data;
+}
+
+module.exports = { uploadFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken };
