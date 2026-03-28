@@ -39,13 +39,28 @@ app.use('/api/v1/properties', propertiesRoutes);
 app.use('/api/v1/properties/:id/photos', photosRoutes);
 
 // Temporary debug endpoint — remove after confirming env vars
-app.get('/debug/env', (_req, res) => {
+app.get('/debug/env', async (_req, res) => {
+  const axios = require('axios');
+  let dropboxStatus = 'not_tested';
+  let dropboxError = null;
+  try {
+    const r = await axios.post(
+      'https://api.dropboxapi.com/2/users/get_current_account',
+      null,
+      { headers: { Authorization: `Bearer ${process.env.DROPBOX_TOKEN}` } }
+    );
+    dropboxStatus = `ok — account: ${r.data.email}`;
+  } catch (e) {
+    dropboxStatus = 'failed';
+    dropboxError = e.response?.status + ' ' + JSON.stringify(e.response?.data);
+  }
   res.json({
     jwt_secret_exists: !!process.env.JWT_SECRET,
     jorge_pass_exists: !!process.env.USER_JORGE_PASS,
-    jorge_pass_length: process.env.USER_JORGE_PASS?.length ?? 0,
-    karen_pass_exists: !!process.env.USER_KAREN_PASS,
-    marketing_pass_exists: !!process.env.USER_MARKETING_PASS,
+    dropbox_token_exists: !!process.env.DROPBOX_TOKEN,
+    dropbox_token_length: process.env.DROPBOX_TOKEN?.length ?? 0,
+    dropbox_status: dropboxStatus,
+    dropbox_error: dropboxError,
   });
 });
 
