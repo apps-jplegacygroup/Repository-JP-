@@ -91,8 +91,8 @@ export default function PropertyDetail() {
       key: 'expand',
       label: hasExpand
         ? `2 Expand (${expandMeta.expandedPhotos.length})`
-        : isExpanding
-        ? `2 Expanding… (${expandMeta.progress || 0}/${expandMeta.total || 0})`
+        : (isExpanding || expanding)
+        ? `2 Expanding… (${expandMeta.progress || 0}/${expandMeta.total || photos.length})`
         : '2 Expand 9:16',
     },
     { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
@@ -252,8 +252,8 @@ export default function PropertyDetail() {
         {activeTab === 'expand' && (
           <div className="space-y-6">
 
-            {/* In-progress state */}
-            {isExpanding && (
+            {/* In-progress state — shows immediately on click (expanding) OR after first poll (isExpanding) */}
+            {(isExpanding || expanding) && (
               <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6">
                 <div className="flex items-center gap-4">
                   <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
@@ -267,11 +267,11 @@ export default function PropertyDetail() {
                     </p>
                   </div>
                 </div>
-                {/* Progress bar */}
+                {/* Progress bar — starts at 0%, updates every 4s via polling */}
                 <div className="mt-4 h-2 bg-gray-700 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                    style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || 1)) * 100}%` }}
+                    style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || photos.length)) * 100}%` }}
                   />
                 </div>
               </div>
@@ -345,7 +345,7 @@ export default function PropertyDetail() {
             )}
 
             {/* Idle state — not started yet */}
-            {!isExpanding && !hasExpand && !expandFailed && (
+            {!isExpanding && !expanding && !hasExpand && !expandFailed && (
               <div className="text-center py-12">
                 <div className="w-20 h-20 bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-5">
                   <svg className="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
