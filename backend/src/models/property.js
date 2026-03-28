@@ -53,13 +53,12 @@ function getById(id) {
   return readAll().find(p => p.id === id) || null;
 }
 
-function create({ address, clientName, assignedTo = [], createdBy, notes = '' }) {
+function create({ address, assignedTo = [], createdBy, notes = '' }) {
   const properties = readAll();
   const now = new Date().toISOString();
   const property = {
     id: uuidv4(),
     address,
-    clientName,
     assignedTo,
     createdBy,
     createdAt: now,

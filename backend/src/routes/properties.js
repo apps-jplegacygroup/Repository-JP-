@@ -18,13 +18,12 @@ router.get('/', (req, res) => {
 
 // POST /api/v1/properties  (admin only)
 router.post('/', requireAdmin, (req, res) => {
-  const { address, clientName, assignedTo, notes } = req.body;
-  if (!address || !clientName) {
-    return res.status(400).json({ error: 'address and clientName are required' });
+  const { address, assignedTo, notes } = req.body;
+  if (!address) {
+    return res.status(400).json({ error: 'address is required' });
   }
   const property = Property.create({
     address,
-    clientName,
     assignedTo: assignedTo || [],
     createdBy: req.user.id,
     notes,

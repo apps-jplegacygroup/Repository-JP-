@@ -7,7 +7,7 @@ const ASSIGNABLE_USERS = [
 ];
 
 export default function CreatePropertyModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({ address: '', clientName: '', notes: '', assignedTo: [] });
+  const [form, setForm] = useState({ address: '', notes: '', assignedTo: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -48,17 +48,6 @@ export default function CreatePropertyModal({ onClose, onCreated }) {
               value={form.address}
               onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
               placeholder="123 Main St, Miami FL"
-              className="w-full bg-gray-800 text-white rounded-lg px-4 py-2.5 text-sm border border-gray-700 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 placeholder-gray-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1.5">Client Name</label>
-            <input
-              required
-              value={form.clientName}
-              onChange={e => setForm(f => ({ ...f, clientName: e.target.value }))}
-              placeholder="John & Jane Smith"
               className="w-full bg-gray-800 text-white rounded-lg px-4 py-2.5 text-sm border border-gray-700 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 placeholder-gray-500"
             />
           </div>

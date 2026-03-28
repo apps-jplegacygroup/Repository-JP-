@@ -113,8 +113,8 @@ export default function Dashboard() {
                     </span>
                   </div>
 
-                  {/* Client */}
-                  <p className="text-gray-400 text-xs mt-1">{property.clientName}</p>
+                  {/* Created date */}
+                  <p className="text-gray-500 text-xs mt-1">{new Date(property.createdAt).toLocaleDateString()}</p>
 
                   {/* Progress bar */}
                   <div className="mt-3 h-1 bg-gray-800 rounded-full overflow-hidden">

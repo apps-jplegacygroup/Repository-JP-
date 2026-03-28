@@ -92,7 +92,7 @@ export default function PropertyDetail() {
           </button>
           <div className="min-w-0">
             <h1 className="text-white font-semibold truncate">{property?.address}</h1>
-            <p className="text-gray-500 text-sm">{property?.clientName}</p>
+            <p className="text-gray-500 text-sm">{new Date(property?.createdAt).toLocaleDateString()}</p>
           </div>
         </div>
       </header>
