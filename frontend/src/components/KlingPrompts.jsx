@@ -454,21 +454,20 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
       {/* ── Bottom CTAs ─────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row gap-3">
 
-        {/* Generate in Higgsfield — Step 7 placeholder */}
+        {/* Generate in Higgsfield — Step 7 */}
         <div className="flex-1 flex items-center justify-between bg-gray-900 rounded-2xl p-5">
           <div>
             <p className="text-white font-medium">Generar clips en Higgsfield</p>
             <p className="text-gray-500 text-sm mt-0.5">
-              Envía todos los prompts a Higgsfield AI y genera los clips automáticamente.
+              Higgsfield AI (Kling v2.1 Pro) genera un clip de 5s por foto en orden de secuencia.
             </p>
           </div>
           <button
-            disabled
-            title="Próximamente — Paso 7"
-            className="flex items-center gap-2 px-5 py-3 bg-purple-600/40 text-white/50 font-semibold rounded-xl text-sm cursor-not-allowed shrink-0"
+            onClick={onContinue}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors shrink-0"
           >
             → Generar en Higgsfield
-            <span className="text-[10px] bg-black/30 px-1.5 py-0.5 rounded">soon</span>
           </button>
         </div>
       </div>

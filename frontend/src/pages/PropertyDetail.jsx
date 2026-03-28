@@ -9,6 +9,7 @@ import AnalysisResults from '../components/AnalysisResults.jsx';
 import QAReview from '../components/QAReview.jsx';
 import SequenceEditor from '../components/SequenceEditor.jsx';
 import KlingPrompts from '../components/KlingPrompts.jsx';
+import HiggsfieldClips from '../components/HiggsfieldClips.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -34,11 +35,17 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step2_stability or step3_claude is in_progress
+  // Poll while step2_stability, step3_claude, or step7_higgsfield is in_progress
   useEffect(() => {
     const step2Status = property?.pipeline?.step2_stability?.status;
     const step3Status = property?.pipeline?.step3_claude?.status;
-    const shouldPoll = step2Status === 'in_progress' || step3Status === 'in_progress';
+    const step7Status = property?.pipeline?.step7_higgsfield?.status;
+    const shouldPoll  = step2Status === 'in_progress'
+                     || step3Status === 'in_progress'
+                     || step7Status === 'in_progress';
+
+    // step7 takes longer — poll every 8s to reduce noise
+    const interval = step7Status === 'in_progress' ? 8000 : 4000;
 
     if (shouldPoll) {
       if (!pollRef.current) {
@@ -48,16 +55,17 @@ export default function PropertyDetail() {
             setProperty(data.property);
             const s2 = data.property.pipeline.step2_stability?.status;
             const s3 = data.property.pipeline.step3_claude?.status;
-            if (s2 !== 'in_progress' && s3 !== 'in_progress') {
+            const s7 = data.property.pipeline.step7_higgsfield?.status;
+            if (s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress') {
               clearInterval(pollRef.current);
               pollRef.current = null;
               setExpanding(false);
               setAnalyzing(false);
-              // Auto-switch to analysis tab when done
               if (s3 === 'done') setActiveTab('analysis');
+              if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
             }
           } catch (_) {}
-        }, 4000);
+        }, interval);
       }
     } else {
       if (pollRef.current) {
@@ -71,9 +79,12 @@ export default function PropertyDetail() {
         pollRef.current = null;
       }
     };
-  // Also depend on local expanding/analyzing so the interval starts even before
-  // the first property refresh confirms in_progress on the server
-  }, [property?.pipeline?.step2_stability?.status, property?.pipeline?.step3_claude?.status, expanding, analyzing]);
+  }, [
+    property?.pipeline?.step2_stability?.status,
+    property?.pipeline?.step3_claude?.status,
+    property?.pipeline?.step7_higgsfield?.status,
+    expanding, analyzing,
+  ]);
 
   // Derived state
   const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
@@ -114,7 +125,19 @@ export default function PropertyDetail() {
     { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
     { key: 'qa', label: step4.status === 'done' ? `4 QA ✓` : hasQA ? `4 QA` : '4 QA' },
     { key: 'sequence', label: property?.pipeline?.step5_sequence?.status === 'done' ? '5 Sequence ✓' : '5 Sequence' },
-    { key: 'kling',    label: property?.pipeline?.step6_kling?.status === 'done' ? '6 Kling ✓' : '6 Kling' },
+    { key: 'kling',      label: property?.pipeline?.step6_kling?.status === 'done' ? '6 Kling ✓' : '6 Kling' },
+    {
+      key: 'higgsfield',
+      label: (() => {
+        const s = property?.pipeline?.step7_higgsfield;
+        if (s?.status === 'done') return '7 Higgsfield ✓';
+        if (s?.status === 'in_progress') {
+          const m = s.meta || {};
+          return `7 Generando… (${m.progress || 0}/${m.total || '?'})`;
+        }
+        return '7 Higgsfield';
+      })(),
+    },
   ];
 
   async function handleFilesSelected(files) {
@@ -521,6 +544,27 @@ export default function PropertyDetail() {
           );
         })()}
 
+        {/* ── Tab 7: Higgsfield Clips ───────────────────────── */}
+        {activeTab === 'higgsfield' && (() => {
+          const step5    = property?.pipeline?.step5_sequence || {};
+          const step7    = property?.pipeline?.step7_higgsfield || {};
+          const ordered  = step5.meta?.orderedPhotos || [];
+          return (
+            <HiggsfieldClips
+              propertyId={id}
+              orderedPhotos={ordered}
+              expandedPhotos={expandMeta.expandedPhotos || []}
+              step7={step7}
+              onStartGeneration={async () => {
+                const { data } = await client.get(`/properties/${id}`);
+                setProperty(data.property);
+                setActiveTab('higgsfield');
+              }}
+              onRefresh={handleRefresh}
+            />
+          );
+        })()}
+
         {/* ── Tab 6: Kling Prompts ──────────────────────────── */}
         {activeTab === 'kling' && (() => {
           const step5     = property?.pipeline?.step5_sequence || {};
@@ -541,7 +585,7 @@ export default function PropertyDetail() {
               expandedPhotos={expandMeta.expandedPhotos || []}
               step6={step6}
               onSaved={handleRefresh}
-              onContinue={() => setActiveTab('kling')}
+              onContinue={() => setActiveTab('higgsfield')}
             />
           );
         })()}

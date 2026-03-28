@@ -7,6 +7,7 @@ const Property = require('../models/property');
 const dropbox = require('../services/dropbox');
 const { analyzeAllPhotos } = require('../services/claude');
 const { expandPhoto, StabilityError } = require('../services/stability');
+const { submitClip, pollClip }        = require('../services/higgsfield');
 
 const router = express.Router({ mergeParams: true });
 
@@ -628,6 +629,162 @@ router.post('/reexpand/:photoId', requireAdmin, async (req, res) => {
     Property.updatePipelineStep(propertyId, 'step4_qa', {
       status: prop.pipeline.step4_qa?.status || 'in_progress',
       meta: { ...m, decisions: d },
+    });
+  });
+});
+
+// POST /api/v1/properties/:id/photos/higgsfield
+// Generates video clips for all photos using Higgsfield AI (Kling model).
+// Returns 202 immediately; processes one photo at a time to respect rate limits.
+// Resume-safe: re-running skips already-completed clips.
+router.post('/higgsfield', requireAdmin, async (req, res) => {
+  const propertyId = req.params.id;
+  const property   = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  if (!process.env.HIGGSFIELD_API_KEY_ID || !process.env.HIGGSFIELD_API_KEY_SECRET) {
+    return res.status(500).json({ error: 'HIGGSFIELD_API_KEY_ID and HIGGSFIELD_API_KEY_SECRET must be set in Railway' });
+  }
+
+  const ordered        = property.pipeline.step5_sequence?.meta?.orderedPhotos || [];
+  const klingPrompts   = property.pipeline.step6_kling?.meta?.klingPrompts     || {};
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+
+  if (ordered.length === 0) {
+    return res.status(400).json({ error: 'No photos in step5_sequence.meta.orderedPhotos — complete the Sequence step first' });
+  }
+
+  // Resume: skip clips already marked done
+  const prevMeta    = property.pipeline.step7_higgsfield?.meta || {};
+  const alreadyDone = (prevMeta.clips || []).filter(c => c.status === 'done');
+  const alreadyIds  = new Set(alreadyDone.map(c => c.photoId));
+  const pending     = ordered.filter(p => !alreadyIds.has(p.photoId));
+
+  if (pending.length === 0) {
+    return res.status(400).json({ error: 'All clips already generated. Nothing to do.' });
+  }
+
+  Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+    status: 'in_progress',
+    meta: {
+      clips:    alreadyDone,
+      errors:   prevMeta.errors || [],
+      progress: alreadyDone.length,
+      total:    ordered.length,
+      startedAt: new Date().toISOString(),
+    },
+  });
+
+  res.status(202).json({ ok: true, total: ordered.length, pending: pending.length, alreadyDone: alreadyDone.length });
+
+  // ── Background processing ────────────────────────────────────────────────
+  ;(async () => {
+    const axios  = require('axios');
+    const paths  = buildPaths(property);
+    const clips  = [...alreadyDone];
+    const errors = [...(prevMeta.errors || [])];
+
+    for (let i = 0; i < pending.length; i++) {
+      const photo = pending[i];
+      const ep    = expandedPhotos.find(e => e.id === photo.photoId);
+      const entry = klingPrompts[photo.photoId];
+
+      if (!ep) {
+        errors.push({ photoId: photo.photoId, name: photo.name, error: 'Expanded photo not found in step2_stability' });
+        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+          status: 'in_progress',
+          meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
+        });
+        continue;
+      }
+      if (!entry?.prompt) {
+        errors.push({ photoId: photo.photoId, name: photo.name, error: 'No Kling prompt found in step6_kling — generate prompts first' });
+        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+          status: 'in_progress',
+          meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
+        });
+        continue;
+      }
+
+      try {
+        console.log(`[higgsfield] ${clips.length + 1}/${ordered.length} Submitting: ${photo.name}`);
+
+        // Fresh Dropbox temp link — old links may have expired
+        const imageUrl = await dropbox.getTemporaryLink(ep.expandedPath);
+
+        // 1 — Submit job to Higgsfield
+        const job = await submitClip(imageUrl, entry.prompt, 5);
+        console.log(`[higgsfield] Job ${job.request_id} submitted for ${photo.name}`);
+
+        // Mark this photo as "generating" so frontend can show it immediately
+        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+          status: 'in_progress',
+          meta: {
+            clips:    [...clips, { photoId: photo.photoId, name: photo.name, status: 'generating', requestId: job.request_id }],
+            errors,
+            progress: clips.length,
+            total:    ordered.length,
+          },
+        });
+
+        // 2 — Poll until completed (max 6 min per clip, 12s interval)
+        const result   = await pollClip(job.request_id, { maxWaitMs: 360_000, intervalMs: 12_000 });
+        const videoUrl = result.video?.url;
+        if (!videoUrl) throw new Error('Higgsfield returned completed status but no video.url');
+
+        // 3 — Download clip
+        console.log(`[higgsfield] Downloading clip for ${photo.name}…`);
+        const videoRes    = await axios.get(videoUrl, { responseType: 'arraybuffer', timeout: 120_000 });
+        const videoBuffer = Buffer.from(videoRes.data);
+
+        // 4 — Upload to Dropbox 04_clips/
+        const clipPath       = `${paths.clips}/${photo.photoId}.mp4`;
+        await dropbox.uploadFile(videoBuffer, clipPath);
+        const clipDropboxUrl = await dropbox.getTemporaryLink(clipPath);
+
+        clips.push({
+          photoId:     photo.photoId,
+          name:        photo.name,
+          space:       photo.space,
+          wowFactor:   photo.wow_factor,
+          status:      'done',
+          requestId:   job.request_id,
+          dropboxPath: clipPath,
+          dropboxUrl:  clipDropboxUrl,
+          generatedAt: new Date().toISOString(),
+        });
+        console.log(`[higgsfield] ✓ ${photo.name} (${clips.length}/${ordered.length})`);
+
+      } catch (err) {
+        console.error(`[higgsfield] ✗ ${photo.name}: ${err.message}`);
+        errors.push({ photoId: photo.photoId, name: photo.name, error: err.message });
+      }
+
+      // Persist progress after every photo
+      Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+        status: 'in_progress',
+        meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
+      });
+    }
+
+    const finalStatus = clips.length > 0 ? 'done' : 'failed';
+    Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+      status: finalStatus,
+      meta: {
+        clips,
+        errors,
+        progress:    ordered.length,
+        total:       ordered.length,
+        completedAt: new Date().toISOString(),
+      },
+    });
+    console.log(`[higgsfield] Complete. ${clips.length}/${ordered.length} clips. Errors: ${errors.length}. Status: ${finalStatus}`);
+  })().catch(err => {
+    console.error('[higgsfield] Fatal background error:', err.message);
+    const prop = Property.getById(propertyId);
+    Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+      status: 'failed',
+      meta: { ...(prop.pipeline.step7_higgsfield?.meta || {}), error: err.message },
     });
   });
 });
