@@ -69,11 +69,9 @@ app.post('/debug/dropbox-folders', async (req, res) => {
   const { createFolder } = require('./services/dropbox');
   const address = req.body?.address || 'TEST PROPERTY - 123 Main St';
   const sanitized = address.replace(/[<>:"/\\|?*]/g, '').trim().slice(0, 80);
-  const base = `/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING/Video Pipeline/${sanitized}`;
+  const base = `/JP Legacy Pipeline/${sanitized}`;
   const folders = [
-    '/JP Legacy Group',
-    '/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING',
-    '/JP Legacy Group/INSUMOS GENERALES DE TODO - MARKETING/Video Pipeline',
+    '/JP Legacy Pipeline',
     base,
     `${base}/01_fotos_raw`,
     `${base}/02_fotos_expandidas`,
