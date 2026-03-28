@@ -31,19 +31,27 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step2_stability is in_progress
+  // Poll while step2_stability or step3_claude is in_progress
   useEffect(() => {
     const step2Status = property?.pipeline?.step2_stability?.status;
-    if (step2Status === 'in_progress') {
+    const step3Status = property?.pipeline?.step3_claude?.status;
+    const shouldPoll = step2Status === 'in_progress' || step3Status === 'in_progress';
+
+    if (shouldPoll) {
       if (!pollRef.current) {
         pollRef.current = setInterval(async () => {
           try {
             const { data } = await client.get(`/properties/${id}`);
             setProperty(data.property);
-            if (data.property.pipeline.step2_stability?.status !== 'in_progress') {
+            const s2 = data.property.pipeline.step2_stability?.status;
+            const s3 = data.property.pipeline.step3_claude?.status;
+            if (s2 !== 'in_progress' && s3 !== 'in_progress') {
               clearInterval(pollRef.current);
               pollRef.current = null;
               setExpanding(false);
+              setAnalyzing(false);
+              // Auto-switch to analysis tab when done
+              if (s3 === 'done') setActiveTab('analysis');
             }
           } catch (_) {}
         }, 4000);
@@ -60,7 +68,7 @@ export default function PropertyDetail() {
         pollRef.current = null;
       }
     };
-  }, [property?.pipeline?.step2_stability?.status]);
+  }, [property?.pipeline?.step2_stability?.status, property?.pipeline?.step3_claude?.status]);
 
   // Derived state
   const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
@@ -72,6 +80,8 @@ export default function PropertyDetail() {
 
   const step3 = property?.pipeline?.step3_claude || {};
   const analysisData = step3.meta || {};
+  const isAnalyzing = step3.status === 'in_progress';
+  const analysisFailed = step3.status === 'failed';
   const hasAnalysis = (analysisData.selectedPhotos?.length || 0) > 0;
 
   // Tab labels
@@ -85,7 +95,7 @@ export default function PropertyDetail() {
         ? `2 Expanding… (${expandMeta.progress || 0}/${expandMeta.total || 0})`
         : '2 Expand 9:16',
     },
-    { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : '3 Analysis' },
+    { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
   ];
 
   async function handleFilesSelected(files) {
@@ -370,15 +380,36 @@ export default function PropertyDetail() {
         {/* ── Tab 3: Analysis ───────────────────────────────── */}
         {activeTab === 'analysis' && (
           <div>
-            {hasAnalysis ? (
+            {isAnalyzing && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 flex items-center gap-4">
+                <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                </svg>
+                <div>
+                  <p className="text-blue-400 font-semibold">Claude Vision is analyzing photos…</p>
+                  <p className="text-gray-400 text-sm mt-0.5">This takes 2–4 minutes. This page updates automatically.</p>
+                </div>
+              </div>
+            )}
+
+            {analysisFailed && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
+                Analysis failed: {analysisData.error || 'Unknown error'}. Check Railway logs and try again.
+              </div>
+            )}
+
+            {hasAnalysis && (
               <AnalysisResults
                 selected={analysisData.selectedPhotos}
                 all={analysisData.analysisResults}
               />
-            ) : (
+            )}
+
+            {!isAnalyzing && !analysisFailed && !hasAnalysis && (
               <div className="text-center py-20 text-gray-500">
                 <p>No analysis yet.</p>
-                <p className="text-sm mt-1">Complete Stability expand first, then click "Analyze with Claude Vision".</p>
+                <p className="text-sm mt-1">Go to the Expand tab and click "Analyze with Claude Vision".</p>
               </div>
             )}
           </div>

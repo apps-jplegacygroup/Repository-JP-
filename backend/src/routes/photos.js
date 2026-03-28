@@ -236,22 +236,16 @@ router.post('/expand', requireAdmin, async (req, res) => {
 });
 
 // POST /api/v1/properties/:id/photos/analyze
+// Returns 202 immediately; Claude Vision runs as a background job.
+// Frontend polls GET /properties/:id — step3_claude.status changes to 'done' or 'failed'.
 router.post('/analyze', requireAdmin, async (req, res) => {
   const propertyId = req.params.id;
-  console.log(`[analyze] req.params:`, JSON.stringify(req.params));
-  console.log(`[analyze] Looking for property ID: ${propertyId}`);
-  const all = Property.getAll();
-  console.log(`[analyze] Total properties in store: ${all.length}`, all.map(p => p.id));
   const property = Property.getById(propertyId);
-  if (!property) return res.status(404).json({
-    error: 'Property not found',
-    receivedId: propertyId,
-    availableIds: all.map(p => p.id),
-  });
+  if (!property) return res.status(404).json({ error: 'Property not found' });
 
   // Prefer expanded 9:16 photos (step2_stability) over raw 4:3 (step1_upload)
   const expandedData = property.pipeline.step2_stability?.meta;
-  const usingExpanded = expandedData?.expandedPhotos?.length > 0;
+  const usingExpanded = (expandedData?.expandedPhotos?.length || 0) > 0;
   const photos = usingExpanded
     ? expandedData.expandedPhotos.map(ep => ({
         id: ep.id,
@@ -262,55 +256,54 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     : (property.pipeline.step1_upload?.meta?.photos || []);
 
   if (photos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
-  console.log(`[analyze] Using ${usingExpanded ? 'EXPANDED 9:16' : 'RAW 4:3'} photos (${photos.length})`);
 
-  Property.updatePipelineStep(req.params.id, 'step1_upload', {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set in environment' });
+  }
+
+  // Mark in_progress and return 202 immediately — avoids Railway 60s proxy timeout
+  Property.updatePipelineStep(propertyId, 'step1_upload', {
     status: 'done',
     meta: property.pipeline.step1_upload.meta,
   });
-  Property.updatePipelineStep(req.params.id, 'step3_claude', { status: 'in_progress', meta: {} });
+  Property.updatePipelineStep(propertyId, 'step3_claude', {
+    status: 'in_progress',
+    meta: { total: photos.length, usingExpanded },
+  });
+  res.status(202).json({ ok: true, total: photos.length, usingExpanded });
 
-  try {
+  // ---- Background processing (after response sent) ----
+  ;(async () => {
     const axios = require('axios');
+    console.log(`[analyze] Starting background analysis of ${photos.length} ${usingExpanded ? 'EXPANDED 9:16' : 'RAW 4:3'} photos`);
 
-    // Verify ANTHROPIC_API_KEY is present
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY is not set in environment');
-    }
-    console.log(`[analyze] Starting analysis of ${photos.length} photos`);
-    console.log(`[analyze] ANTHROPIC_API_KEY present: ${!!process.env.ANTHROPIC_API_KEY}`);
-
-    // Download photos from Dropbox, resize for Claude, encode as base64
+    // Download + resize all photos in parallel (max 8 concurrent)
+    const DOWNLOAD_CONCURRENCY = 8;
     const photoData = [];
-    for (const photo of photos) {
-      try {
-        console.log(`[analyze] Fetching photo: ${photo.name} from ${photo.dropboxPath}`);
-        const link = await dropbox.getTemporaryLink(photo.dropboxPath);
-        const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
-        const originalKB = Math.round(imgRes.data.byteLength / 1024);
-
-        // Resize to max 1500px on longest side, convert to JPEG 85% quality
-        // This dramatically reduces size: 5MB → ~150KB, speeds up Claude API calls
-        const resized = await sharp(Buffer.from(imgRes.data))
-          .resize(1500, 1500, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 85 })
-          .toBuffer();
-        const resizedKB = Math.round(resized.byteLength / 1024);
-        console.log(`[analyze] Got photo ${photo.name}: ${originalKB}KB → resized ${resizedKB}KB`);
-
-        const base64 = resized.toString('base64');
-        photoData.push({ id: photo.id, name: photo.name, base64, mediaType: 'image/jpeg' });
-      } catch (fetchErr) {
-        console.error(`[analyze] Failed to fetch photo ${photo.name}:`, fetchErr.message);
-        throw new Error(`Failed to fetch photo "${photo.name}": ${fetchErr.message}`);
-      }
+    for (let i = 0; i < photos.length; i += DOWNLOAD_CONCURRENCY) {
+      const batch = photos.slice(i, i + DOWNLOAD_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (photo) => {
+          const link = await dropbox.getTemporaryLink(photo.dropboxPath);
+          const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+          // Resize to max 1200px (enough for Claude Vision, smaller = faster)
+          const resized = await sharp(Buffer.from(imgRes.data))
+            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+          const kb = Math.round(resized.byteLength / 1024);
+          console.log(`[analyze] Downloaded+resized ${photo.name}: ${kb}KB`);
+          return { id: photo.id, name: photo.name, base64: resized.toString('base64'), mediaType: 'image/jpeg' };
+        })
+      );
+      photoData.push(...results);
     }
 
-    console.log(`[analyze] All ${photoData.length} photos fetched. Starting Claude Vision...`);
+    console.log(`[analyze] All ${photoData.length} photos ready. Calling Claude Vision…`);
     const { all, selected } = await analyzeAllPhotos(photoData);
-    console.log(`[analyze] Claude Vision done. Total: ${all.length}, Selected: ${selected.length}`);
+    console.log(`[analyze] Done. Analyzed: ${all.length}, Selected: ${selected.length}`);
 
-    Property.updatePipelineStep(req.params.id, 'step3_claude', {
+    Property.updatePipelineStep(propertyId, 'step3_claude', {
       status: 'done',
       meta: {
         analysisResults: all,
@@ -320,19 +313,13 @@ router.post('/analyze', requireAdmin, async (req, res) => {
         totalSelected: selected.length,
       },
     });
-
-    res.json({ ok: true, totalAnalyzed: all.length, totalSelected: selected.length, selected });
-  } catch (err) {
-    console.error('[analyze] FAILED:', err.message, err.stack);
-    Property.updatePipelineStep(req.params.id, 'step3_claude', {
+  })().catch(err => {
+    console.error('[analyze] FAILED:', err.message, err.stack?.split('\n')[1]);
+    Property.updatePipelineStep(propertyId, 'step3_claude', {
       status: 'failed',
-      meta: { error: err.message, stack: err.stack?.split('\n').slice(0, 5) },
+      meta: { error: err.message },
     });
-    res.status(500).json({
-      error: err.message,
-      detail: err.response?.data || err.cause?.message || null,
-    });
-  }
+  });
 });
 
 module.exports = router;
