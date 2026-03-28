@@ -15,6 +15,12 @@ if (missing.length) {
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Request logger — logs every incoming request
+app.use((req, _res, next) => {
+  console.log(`[req] ${req.method} ${req.path} | origin: ${req.headers.origin || 'none'}`);
+  next();
+});
+
 // Middleware
 app.use(corsMiddleware);
 app.use(express.json());
