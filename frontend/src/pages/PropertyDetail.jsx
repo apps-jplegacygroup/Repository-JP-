@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import client from '../api/client';
@@ -15,10 +15,15 @@ export default function PropertyDetail() {
   const [property, setProperty] = useState(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [expanding, setExpanding] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [activeTab, setActiveTab] = useState('upload');
+  const [orderedPhotos, setOrderedPhotos] = useState(null);
 
+  const pollRef = useRef(null);
+
+  // Load property
   useEffect(() => {
     client.get(`/properties/${id}`)
       .then(({ data }) => setProperty(data.property))
@@ -26,12 +31,62 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  const [orderedPhotos, setOrderedPhotos] = useState(null);
+  // Poll while step2_stability is in_progress
+  useEffect(() => {
+    const step2Status = property?.pipeline?.step2_stability?.status;
+    if (step2Status === 'in_progress') {
+      if (!pollRef.current) {
+        pollRef.current = setInterval(async () => {
+          try {
+            const { data } = await client.get(`/properties/${id}`);
+            setProperty(data.property);
+            if (data.property.pipeline.step2_stability?.status !== 'in_progress') {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+              setExpanding(false);
+            }
+          } catch (_) {}
+        }, 4000);
+      }
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [property?.pipeline?.step2_stability?.status]);
+
+  // Derived state
   const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
-  const expandData = property?.pipeline?.step2_stability?.meta || {};
-  const hasExpand = expandData.expandedPhotos?.length > 0;
-  const analysisData = property?.pipeline?.step3_claude?.meta || {};
-  const hasAnalysis = analysisData.selectedPhotos?.length > 0;
+  const step2 = property?.pipeline?.step2_stability || {};
+  const expandMeta = step2.meta || {};
+  const isExpanding = step2.status === 'in_progress';
+  const hasExpand = step2.status === 'done' && (expandMeta.expandedPhotos?.length || 0) > 0;
+  const expandFailed = step2.status === 'failed';
+
+  const step3 = property?.pipeline?.step3_claude || {};
+  const analysisData = step3.meta || {};
+  const hasAnalysis = (analysisData.selectedPhotos?.length || 0) > 0;
+
+  // Tab labels
+  const tabs = [
+    { key: 'upload', label: `1 Upload (${photos.length})` },
+    {
+      key: 'expand',
+      label: hasExpand
+        ? `2 Expand (${expandMeta.expandedPhotos.length})`
+        : isExpanding
+        ? `2 Expanding… (${expandMeta.progress || 0}/${expandMeta.total || 0})`
+        : '2 Expand 9:16',
+    },
+    { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : '3 Analysis' },
+  ];
 
   async function handleFilesSelected(files) {
     setUploading(true);
@@ -43,10 +98,9 @@ export default function PropertyDetail() {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setUploadResult(data);
-      // Refresh property to get updated photos
       const updated = await client.get(`/properties/${id}`);
       setProperty(updated.data.property);
-      setOrderedPhotos(null); // reset manual order after new upload
+      setOrderedPhotos(null);
     } catch (err) {
       setUploadResult({ error: err.response?.data?.error || 'Upload failed' });
     } finally {
@@ -64,10 +118,22 @@ export default function PropertyDetail() {
     }
   }
 
+  async function handleExpand() {
+    setExpanding(true);
+    try {
+      await client.post(`/properties/${id}/photos/expand`);
+      // 202 accepted — polling useEffect handles updates
+      setActiveTab('expand');
+    } catch (err) {
+      alert(err.response?.data?.error || 'Expand failed to start');
+      setExpanding(false);
+    }
+  }
+
   async function handleAnalyze() {
     setAnalyzing(true);
     try {
-      const { data } = await client.post(`/properties/${id}/photos/analyze`);
+      await client.post(`/properties/${id}/photos/analyze`);
       const updated = await client.get(`/properties/${id}`);
       setProperty(updated.data.property);
       setActiveTab('analysis');
@@ -107,12 +173,8 @@ export default function PropertyDetail() {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit">
-          {[
-            { key: 'upload', label: `1 Upload (${photos.length})` },
-            { key: 'expand', label: hasExpand ? `2 Expand (${expandData.expandedPhotos.length})` : '2 Expand' },
-            { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : '3 Analysis' },
-          ].map(tab => (
+        <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit flex-wrap">
+          {tabs.map(tab => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
@@ -127,7 +189,7 @@ export default function PropertyDetail() {
           ))}
         </div>
 
-        {/* Upload tab */}
+        {/* ── Tab 1: Upload ─────────────────────────────────── */}
         {activeTab === 'upload' && (
           <div className="space-y-6">
             {user?.role === 'admin' && (
@@ -158,62 +220,154 @@ export default function PropertyDetail() {
               onReorder={user?.role === 'admin' ? setOrderedPhotos : null}
             />
 
-            {/* Analyze button */}
+            {/* Next step prompt */}
             {photos.length > 0 && user?.role === 'admin' && (
               <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5">
                 <div>
-                  <p className="text-white font-medium">{photos.length} photos ready for analysis</p>
-                  <p className="text-gray-500 text-sm mt-0.5">Claude Vision will select the best 25–30 shots with prompts</p>
+                  <p className="text-white font-medium">{photos.length} raw photos uploaded</p>
+                  <p className="text-gray-500 text-sm mt-0.5">Next: expand to 9:16 with Stability AI before analysis</p>
                 </div>
                 <button
-                  onClick={handleAnalyze}
-                  disabled={analyzing}
-                  className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
+                  onClick={() => setActiveTab('expand')}
+                  className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-gray-200 font-semibold px-5 py-3 rounded-xl text-sm transition-colors shrink-0"
                 >
-                  {analyzing ? (
-                    <>
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                      </svg>
-                      Analyzing… (may take 2–3 min)
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 001.357 2.059l.648.325M14.25 3.104c.251.023.501.05.75.082M19.5 7l-.648 7.143a2.25 2.25 0 01-2.243 2.107h-7.217a2.25 2.25 0 01-2.243-2.107L5 7m14.5 0H5m7.25 10v3.75" />
-                      </svg>
-                      Analyze with Claude Vision
-                    </>
-                  )}
+                  Go to Expand →
                 </button>
               </div>
             )}
           </div>
         )}
 
-        {/* Expand tab — Step 2: Stability AI 4:3 → 9:16 */}
+        {/* ── Tab 2: Expand 9:16 ───────────────────────────── */}
         {activeTab === 'expand' && (
-          <div className="text-center py-20">
-            <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-              </svg>
-            </div>
-            <p className="text-gray-400 font-medium">Stability AI Expand — Coming Soon</p>
-            <p className="text-gray-600 text-sm mt-1 max-w-sm mx-auto">
-              Generative expand will convert all selected photos from 4:3 to 9:16 vertical format using Stability AI.
-              Complete this step before running Claude Vision analysis.
-            </p>
-            {photos.length > 0 && (
-              <div className="mt-4 bg-gray-900 rounded-xl px-5 py-3 inline-block">
-                <p className="text-gray-400 text-sm">{photos.length} photos ready to expand</p>
+          <div className="space-y-6">
+
+            {/* In-progress state */}
+            {isExpanding && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6">
+                <div className="flex items-center gap-4">
+                  <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                  <div>
+                    <p className="text-blue-400 font-semibold">Expanding photos with Stability AI…</p>
+                    <p className="text-gray-400 text-sm mt-0.5">
+                      {expandMeta.progress || 0} of {expandMeta.total || photos.length} photos — this may take several minutes
+                    </p>
+                  </div>
+                </div>
+                {/* Progress bar */}
+                <div className="mt-4 h-2 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                    style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || 1)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Failed state */}
+            {expandFailed && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
+                Expansion failed: {expandMeta.error || 'Unknown error'}. Check Railway logs.
+              </div>
+            )}
+
+            {/* Done — show expanded photos */}
+            {hasExpand && (
+              <>
+                <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
+                  <p className="text-green-400 font-medium">
+                    {expandMeta.expandedPhotos.length} photos expanded to 9:16 ✓
+                  </p>
+                  {expandMeta.errors?.length > 0 && (
+                    <p className="text-amber-400 text-sm mt-1">{expandMeta.errors.length} photos failed to expand</p>
+                  )}
+                </div>
+
+                {/* Expanded photo thumbnails */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {expandMeta.expandedPhotos.map((ep) => (
+                    <div key={ep.id} className="bg-gray-800 rounded-xl overflow-hidden aspect-[9/16]">
+                      <img
+                        src={ep.thumbnailUrl}
+                        alt={ep.name}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Analyze button — only appears after expand is done */}
+                {user?.role === 'admin' && (
+                  <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5">
+                    <div>
+                      <p className="text-white font-medium">{expandMeta.expandedPhotos.length} expanded photos ready</p>
+                      <p className="text-gray-500 text-sm mt-0.5">Claude Vision will analyze the 9:16 photos and select the best 25–30</p>
+                    </div>
+                    <button
+                      onClick={handleAnalyze}
+                      disabled={analyzing}
+                      className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
+                    >
+                      {analyzing ? (
+                        <>
+                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                          </svg>
+                          Analyzing… (2–3 min)
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 001.357 2.059l.648.325M14.25 3.104c.251.023.501.05.75.082M19.5 7l-.648 7.143a2.25 2.25 0 01-2.243 2.107h-7.217a2.25 2.25 0 01-2.243-2.107L5 7m14.5 0H5m7.25 10v3.75" />
+                          </svg>
+                          Analyze with Claude Vision
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Idle state — not started yet */}
+            {!isExpanding && !hasExpand && !expandFailed && (
+              <div className="text-center py-12">
+                <div className="w-20 h-20 bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-5">
+                  <svg className="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                  </svg>
+                </div>
+                <p className="text-white font-semibold text-lg mb-1">Expand to 9:16</p>
+                <p className="text-gray-500 text-sm max-w-sm mx-auto mb-6">
+                  Stability AI generative outpaint will convert all {photos.length} raw 4:3 photos into
+                  1080×1920 vertical format for Reels / TikTok.
+                </p>
+
+                {photos.length === 0 ? (
+                  <p className="text-gray-600 text-sm">Upload photos first in the Upload tab.</p>
+                ) : user?.role === 'admin' ? (
+                  <button
+                    onClick={handleExpand}
+                    disabled={expanding}
+                    className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-8 py-3 rounded-xl text-sm transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                    </svg>
+                    Expand {photos.length} photos with Stability AI
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
         )}
 
-        {/* Analysis tab */}
+        {/* ── Tab 3: Analysis ───────────────────────────────── */}
         {activeTab === 'analysis' && (
           <div>
             {hasAnalysis ? (
@@ -223,7 +377,8 @@ export default function PropertyDetail() {
               />
             ) : (
               <div className="text-center py-20 text-gray-500">
-                No analysis yet. Upload photos and click "Analyze with Claude Vision" in the Upload tab.
+                <p>No analysis yet.</p>
+                <p className="text-sm mt-1">Complete Stability expand first, then click "Analyze with Claude Vision".</p>
               </div>
             )}
           </div>

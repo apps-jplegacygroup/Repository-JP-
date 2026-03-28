@@ -6,6 +6,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const Property = require('../models/property');
 const dropbox = require('../services/dropbox');
 const { analyzeAllPhotos } = require('../services/claude');
+const stability = require('../services/stability');
 
 const router = express.Router({ mergeParams: true });
 
@@ -150,6 +151,90 @@ router.delete('/:photoId', requireAdmin, (req, res) => {
   res.json({ ok: true, remaining: filtered.length });
 });
 
+// POST /api/v1/properties/:id/photos/expand
+// Starts Stability AI outpaint (4:3 → 9:16) as a background job.
+// Returns 202 immediately; frontend polls GET /properties/:id for progress.
+router.post('/expand', requireAdmin, async (req, res) => {
+  const propertyId = req.params.id;
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const rawPhotos = property.pipeline.step1_upload?.meta?.photos || [];
+  if (rawPhotos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
+
+  // Mark in_progress and return 202 immediately
+  Property.updatePipelineStep(propertyId, 'step2_stability', {
+    status: 'in_progress',
+    meta: { expandedPhotos: [], progress: 0, total: rawPhotos.length },
+  });
+  res.status(202).json({ ok: true, total: rawPhotos.length });
+
+  // ---- Background processing (after response sent) ----
+  ;(async () => {
+    const paths = buildPaths(property);
+    const expandedPhotos = [];
+    const errors = [];
+
+    for (let i = 0; i < rawPhotos.length; i++) {
+      const photo = rawPhotos[i];
+      try {
+        console.log(`[expand] Processing ${i + 1}/${rawPhotos.length}: ${photo.name}`);
+
+        // 1. Download raw photo from Dropbox
+        const link = await dropbox.getTemporaryLink(photo.dropboxPath);
+        const axios = require('axios');
+        const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+
+        // 2. Expand 4:3 → 9:16 with Stability AI
+        const expandedBuffer = await stability.expandPhoto(Buffer.from(imgRes.data));
+
+        // 3. Upload expanded photo to Dropbox 02_fotos_expandidas
+        const expandedPath = `${paths.expanded}/${photo.id}_9x16.jpg`;
+        await dropbox.uploadFile(expandedBuffer, expandedPath);
+        const thumbnailUrl = await dropbox.getTemporaryLink(expandedPath);
+        console.log(`[expand] Done ${photo.name} → ${expandedPath}`);
+
+        expandedPhotos.push({
+          id: photo.id,
+          name: photo.name,
+          originalPath: photo.dropboxPath,
+          expandedPath,
+          thumbnailUrl,
+          expandedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`[expand] Failed ${photo.name}:`, err.message);
+        errors.push({ name: photo.name, error: err.message });
+      }
+
+      // Update progress after each photo (success or failure)
+      Property.updatePipelineStep(propertyId, 'step2_stability', {
+        status: 'in_progress',
+        meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: i + 1, total: rawPhotos.length },
+      });
+    }
+
+    const finalStatus = expandedPhotos.length > 0 ? 'done' : 'failed';
+    Property.updatePipelineStep(propertyId, 'step2_stability', {
+      status: finalStatus,
+      meta: {
+        expandedPhotos,
+        errors,
+        progress: rawPhotos.length,
+        total: rawPhotos.length,
+        expandedAt: new Date().toISOString(),
+      },
+    });
+    console.log(`[expand] Finished. ${expandedPhotos.length}/${rawPhotos.length} expanded. Status: ${finalStatus}`);
+  })().catch(err => {
+    console.error('[expand] Fatal background error:', err.message);
+    Property.updatePipelineStep(propertyId, 'step2_stability', {
+      status: 'failed',
+      meta: { error: err.message },
+    });
+  });
+});
+
 // POST /api/v1/properties/:id/photos/analyze
 router.post('/analyze', requireAdmin, async (req, res) => {
   const propertyId = req.params.id;
@@ -164,8 +249,20 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     availableIds: all.map(p => p.id),
   });
 
-  const photos = property.pipeline.step1_upload?.meta?.photos || [];
+  // Prefer expanded 9:16 photos (step2_stability) over raw 4:3 (step1_upload)
+  const expandedData = property.pipeline.step2_stability?.meta;
+  const usingExpanded = expandedData?.expandedPhotos?.length > 0;
+  const photos = usingExpanded
+    ? expandedData.expandedPhotos.map(ep => ({
+        id: ep.id,
+        name: ep.name,
+        dropboxPath: ep.expandedPath,
+        mediaType: 'image/jpeg',
+      }))
+    : (property.pipeline.step1_upload?.meta?.photos || []);
+
   if (photos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
+  console.log(`[analyze] Using ${usingExpanded ? 'EXPANDED 9:16' : 'RAW 4:3'} photos (${photos.length})`);
 
   Property.updatePipelineStep(req.params.id, 'step1_upload', {
     status: 'done',
