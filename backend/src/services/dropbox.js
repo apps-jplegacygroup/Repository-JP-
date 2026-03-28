@@ -119,4 +119,98 @@ async function testToken() {
   return res.data; // returns { result: 'ping' } if token is valid
 }
 
-module.exports = { uploadFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken };
+// Upload a large file (>100 MB) using Dropbox upload sessions (chunked).
+// Chunk size: 100 MB. Automatically handles session start/append/finish.
+async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
+  const CHUNK = chunkSizeMB * 1024 * 1024;
+  const total = buffer.length;
+
+  // 1 — Start session
+  let sessionId;
+  try {
+    const startRes = await axios.post(
+      `${CONTENT_API}/files/upload_session/start`,
+      buffer.slice(0, Math.min(CHUNK, total)),
+      {
+        headers: {
+          Authorization: `Bearer ${TOKEN()}`,
+          'Content-Type': 'application/octet-stream',
+          'Dropbox-API-Arg': JSON.stringify({ close: total <= CHUNK }),
+        },
+        maxBodyLength: Infinity,
+      }
+    );
+    sessionId = startRes.data.session_id;
+  } catch (err) { dropboxError(err); }
+
+  if (total <= CHUNK) {
+    // File fits in one chunk — commit immediately
+    try {
+      const res = await axios.post(
+        `${CONTENT_API}/files/upload_session/finish`,
+        Buffer.alloc(0),
+        {
+          headers: {
+            Authorization: `Bearer ${TOKEN()}`,
+            'Content-Type': 'application/octet-stream',
+            'Dropbox-API-Arg': JSON.stringify({
+              cursor: { session_id: sessionId, offset: Math.min(CHUNK, total) },
+              commit: { path: dropboxPath, mode: { '.tag': 'overwrite' }, autorename: false, mute: true },
+            }),
+          },
+          maxBodyLength: Infinity,
+        }
+      );
+      return res.data;
+    } catch (err) { dropboxError(err); }
+  }
+
+  // 2 — Append remaining chunks
+  let offset = CHUNK;
+  while (offset < total) {
+    const end      = Math.min(offset + CHUNK, total);
+    const isLast   = end >= total;
+    const chunk    = buffer.slice(offset, end);
+
+    if (!isLast) {
+      try {
+        await axios.post(
+          `${CONTENT_API}/files/upload_session/append_v2`,
+          chunk,
+          {
+            headers: {
+              Authorization: `Bearer ${TOKEN()}`,
+              'Content-Type': 'application/octet-stream',
+              'Dropbox-API-Arg': JSON.stringify({ cursor: { session_id: sessionId, offset }, close: false }),
+            },
+            maxBodyLength: Infinity,
+          }
+        );
+      } catch (err) { dropboxError(err); }
+      offset = end;
+    } else {
+      // 3 — Finish session
+      try {
+        const res = await axios.post(
+          `${CONTENT_API}/files/upload_session/finish`,
+          chunk,
+          {
+            headers: {
+              Authorization: `Bearer ${TOKEN()}`,
+              'Content-Type': 'application/octet-stream',
+              'Dropbox-API-Arg': JSON.stringify({
+                cursor: { session_id: sessionId, offset },
+                commit: { path: dropboxPath, mode: { '.tag': 'overwrite' }, autorename: false, mute: true },
+              }),
+            },
+            maxBodyLength: Infinity,
+          }
+        );
+        return res.data;
+      } catch (err) { dropboxError(err); }
+      break;
+    }
+  }
+}
+
+module.exports = { uploadFile, uploadLargeFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken };

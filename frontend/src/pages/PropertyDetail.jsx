@@ -10,6 +10,7 @@ import QAReview from '../components/QAReview.jsx';
 import SequenceEditor from '../components/SequenceEditor.jsx';
 import KlingPrompts from '../components/KlingPrompts.jsx';
 import HiggsfieldClips from '../components/HiggsfieldClips.jsx';
+import RenderFinal from '../components/RenderFinal.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -40,12 +41,14 @@ export default function PropertyDetail() {
     const step2Status = property?.pipeline?.step2_stability?.status;
     const step3Status = property?.pipeline?.step3_claude?.status;
     const step7Status = property?.pipeline?.step7_higgsfield?.status;
+    const step8Status = property?.pipeline?.step8_render?.status;
     const shouldPoll  = step2Status === 'in_progress'
                      || step3Status === 'in_progress'
-                     || step7Status === 'in_progress';
+                     || step7Status === 'in_progress'
+                     || step8Status === 'in_progress';
 
-    // step7 takes longer — poll every 8s to reduce noise
-    const interval = step7Status === 'in_progress' ? 8000 : 4000;
+    // step7/8 take longer — poll every 8s to reduce noise
+    const interval = (step7Status === 'in_progress' || step8Status === 'in_progress') ? 8000 : 4000;
 
     if (shouldPoll) {
       if (!pollRef.current) {
@@ -56,13 +59,15 @@ export default function PropertyDetail() {
             const s2 = data.property.pipeline.step2_stability?.status;
             const s3 = data.property.pipeline.step3_claude?.status;
             const s7 = data.property.pipeline.step7_higgsfield?.status;
-            if (s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress') {
+            const s8 = data.property.pipeline.step8_render?.status;
+            if (s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
               clearInterval(pollRef.current);
               pollRef.current = null;
               setExpanding(false);
               setAnalyzing(false);
               if (s3 === 'done') setActiveTab('analysis');
               if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
+              if (s8 === 'done' || s8 === 'failed') setActiveTab('render');
             }
           } catch (_) {}
         }, interval);
@@ -83,6 +88,7 @@ export default function PropertyDetail() {
     property?.pipeline?.step2_stability?.status,
     property?.pipeline?.step3_claude?.status,
     property?.pipeline?.step7_higgsfield?.status,
+    property?.pipeline?.step8_render?.status,
     expanding, analyzing,
   ]);
 
@@ -136,6 +142,18 @@ export default function PropertyDetail() {
           return `7 Generando… (${m.progress || 0}/${m.total || '?'})`;
         }
         return '7 Higgsfield';
+      })(),
+    },
+    {
+      key: 'render',
+      label: (() => {
+        const s = property?.pipeline?.step8_render;
+        if (s?.status === 'done') return '8 Render ✓';
+        if (s?.status === 'in_progress') {
+          const m = s.meta || {};
+          return `8 Renderizando… ${m.renderPct ? Math.round(m.renderPct) + '%' : ''}`;
+        }
+        return '8 Render';
       })(),
     },
   ];
@@ -544,6 +562,21 @@ export default function PropertyDetail() {
           );
         })()}
 
+        {/* ── Tab 8: Render Final ───────────────────────────── */}
+        {activeTab === 'render' && (() => {
+          const step7      = property?.pipeline?.step7_higgsfield || {};
+          const step8      = property?.pipeline?.step8_render     || {};
+          const doneClips  = (step7.meta?.clips || []).filter(c => c.status === 'done');
+          return (
+            <RenderFinal
+              propertyId={id}
+              step8={step8}
+              doneClipCount={doneClips.length}
+              onRefresh={handleRefresh}
+            />
+          );
+        })()}
+
         {/* ── Tab 7: Higgsfield Clips ───────────────────────── */}
         {activeTab === 'higgsfield' && (() => {
           const step5    = property?.pipeline?.step5_sequence || {};
@@ -561,6 +594,7 @@ export default function PropertyDetail() {
                 setActiveTab('higgsfield');
               }}
               onRefresh={handleRefresh}
+              onContinue={() => setActiveTab('render')}
             />
           );
         })()}

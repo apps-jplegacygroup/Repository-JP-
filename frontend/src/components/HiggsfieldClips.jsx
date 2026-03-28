@@ -123,7 +123,7 @@ function ClipCard({ clip, thumb }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPhotos, step7, onStartGeneration, onRefresh }) {
+export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPhotos, step7, onStartGeneration, onRefresh, onContinue }) {
   const [starting, setStarting] = useState(false);
 
   // Build thumbMap
@@ -312,12 +312,10 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
             </p>
           </div>
           <button
-            disabled
-            title="Próximamente — Paso 8"
-            className="flex items-center gap-2 px-6 py-3 bg-amber-500/40 text-white/50 font-semibold rounded-xl text-sm cursor-not-allowed"
+            onClick={onContinue}
+            className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl text-sm transition-colors"
           >
             → Render final
-            <span className="text-[10px] bg-black/30 px-1.5 py-0.5 rounded">soon</span>
           </button>
         </div>
       )}
