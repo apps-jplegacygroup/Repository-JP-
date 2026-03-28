@@ -59,10 +59,11 @@ function CheckBadge({ ok, label }) {
 }
 
 // ── Single photo row ──────────────────────────────────────────────────────────
-function PhotoPromptRow({ photo, index, thumbUrl, entry, onChange }) {
+function PhotoPromptRow({ photo, index, thumbUrl, entry, onChange, isGenerating, onGenerate }) {
   const [copied, setCopied] = useState(false);
-  const isWow = photo.wow_factor >= 10;
-  const checks = validatePrompt(entry.prompt, entry.movement);
+  const isWow    = photo.wow_factor >= 10;
+  const isEmpty  = !entry.prompt?.trim();
+  const checks   = validatePrompt(entry.prompt, entry.movement);
   const allChecked = Object.values(checks).every(Boolean);
 
   function handleCopy() {
@@ -128,14 +129,53 @@ function PhotoPromptRow({ photo, index, thumbUrl, entry, onChange }) {
           </select>
         </div>
 
-        {/* Prompt textarea */}
-        <textarea
-          value={entry.prompt}
-          onChange={e => onChange({ prompt: e.target.value })}
-          rows={3}
-          className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-xs p-2.5 rounded-lg resize-none focus:outline-none focus:border-amber-500 placeholder-gray-600 leading-relaxed"
-          placeholder="Prompt de movimiento Kling 3.0…"
-        />
+        {/* Prompt textarea + AI generate button */}
+        <div className="relative">
+          <textarea
+            value={entry.prompt}
+            onChange={e => onChange({ prompt: e.target.value })}
+            rows={isEmpty ? 2 : 3}
+            disabled={isGenerating}
+            className={`w-full bg-gray-800 border text-gray-200 text-xs p-2.5 rounded-lg resize-none focus:outline-none focus:border-amber-500 placeholder-gray-600 leading-relaxed transition-colors disabled:opacity-60 ${
+              isEmpty ? 'border-violet-600/60 border-dashed' : 'border-gray-700'
+            }`}
+            placeholder="Prompt de movimiento Kling 3.0… o usa ✨ para generar con IA"
+          />
+          {/* Generating overlay */}
+          {isGenerating && (
+            <div className="absolute inset-0 bg-gray-900/70 rounded-lg flex items-center justify-center gap-2 text-violet-400 text-xs font-medium">
+              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+              </svg>
+              Generando prompt con IA…
+            </div>
+          )}
+        </div>
+        {/* AI generate button — always visible, prominent when empty */}
+        <button
+          onClick={onGenerate}
+          disabled={isGenerating}
+          className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+            isEmpty
+              ? 'bg-violet-600 hover:bg-violet-500 text-white'
+              : 'bg-violet-600/15 hover:bg-violet-600/30 text-violet-400 border border-violet-600/30'
+          }`}
+        >
+          {isGenerating ? (
+            <>
+              <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+              </svg>
+              Generando…
+            </>
+          ) : isEmpty ? (
+            <>✨ Generar con IA</>
+          ) : (
+            <>✨ Regenerar con IA</>
+          )}
+        </button>
 
         {/* Checklist */}
         <div className="flex flex-wrap gap-1.5">
@@ -198,14 +238,67 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     return init;
   });
 
-  const [saving, setSaving]   = useState(false);
-  const [saved,  setSaved]    = useState(!!step6?.meta?.savedAt);
-  const [dirty,  setDirty]    = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [saved,        setSaved]        = useState(!!step6?.meta?.savedAt);
+  const [dirty,        setDirty]        = useState(false);
+  const [generating,   setGenerating]   = useState({});  // { [photoId]: true }
+  const [generatingAll, setGeneratingAll] = useState(false);
 
   function handleChange(photoId, updates) {
     setEntries(prev => ({ ...prev, [photoId]: { ...prev[photoId], ...updates } }));
     setDirty(true);
     setSaved(false);
+  }
+
+  async function handleGenerateSingle(photo) {
+    setGenerating(prev => ({ ...prev, [photo.photoId]: true }));
+    try {
+      const { data } = await client.post(
+        `/properties/${propertyId}/photos/generate-kling-prompt/${photo.photoId}`,
+        { space: photo.space, description: photo.description, wowFactor: photo.wow_factor }
+      );
+      setEntries(prev => ({
+        ...prev,
+        [photo.photoId]: { prompt: data.klingPrompt, movement: data.klingMovement },
+      }));
+      setDirty(true);
+      setSaved(false);
+    } catch (err) {
+      alert(`Error generando prompt para ${photo.name}: ${err.response?.data?.error || err.message}`);
+    } finally {
+      setGenerating(prev => ({ ...prev, [photo.photoId]: false }));
+    }
+  }
+
+  async function handleGenerateAll() {
+    const empty = (orderedPhotos || []).filter(p => !entries[p.photoId]?.prompt?.trim());
+    if (empty.length === 0) return;
+    setGeneratingAll(true);
+    // Process in batches of 3 concurrent
+    const BATCH = 3;
+    for (let i = 0; i < empty.length; i += BATCH) {
+      const batch = empty.slice(i, i + BATCH);
+      await Promise.all(batch.map(async photo => {
+        setGenerating(prev => ({ ...prev, [photo.photoId]: true }));
+        try {
+          const { data } = await client.post(
+            `/properties/${propertyId}/photos/generate-kling-prompt/${photo.photoId}`,
+            { space: photo.space, description: photo.description, wowFactor: photo.wow_factor }
+          );
+          setEntries(prev => ({
+            ...prev,
+            [photo.photoId]: { prompt: data.klingPrompt, movement: data.klingMovement },
+          }));
+          setDirty(true);
+          setSaved(false);
+        } catch (_) {
+          // Skip failed; user can retry individually
+        } finally {
+          setGenerating(prev => ({ ...prev, [photo.photoId]: false }));
+        }
+      }));
+    }
+    setGeneratingAll(false);
   }
 
   async function handleSave() {
@@ -248,6 +341,7 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
   }
 
   // Stats
+  const emptyCount = (orderedPhotos || []).filter(p => !entries[p.photoId]?.prompt?.trim()).length;
   const total     = (orderedPhotos || []).length;
   const readyCount = (orderedPhotos || []).filter(p => {
     const e = entries[p.photoId];
@@ -285,6 +379,25 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {emptyCount > 0 && (
+            <button
+              onClick={handleGenerateAll}
+              disabled={generatingAll}
+              className="flex items-center gap-1.5 px-3 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-colors"
+            >
+              {generatingAll ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                  Generando {emptyCount}…
+                </>
+              ) : (
+                <>✨ Generar {emptyCount} vacío{emptyCount > 1 ? 's' : ''}</>
+              )}
+            </button>
+          )}
           <button
             onClick={copyAllPrompts}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium rounded-lg transition-colors"
@@ -332,6 +445,8 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
             thumbUrl={thumbMap[photo.photoId]}
             entry={entries[photo.photoId] || { prompt: '', movement: 'slow_zoom_in' }}
             onChange={updates => handleChange(photo.photoId, updates)}
+            isGenerating={!!generating[photo.photoId]}
+            onGenerate={() => handleGenerateSingle(photo)}
           />
         ))}
       </div>

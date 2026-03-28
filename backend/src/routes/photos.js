@@ -357,6 +357,123 @@ router.post('/analyze', requireAdmin, async (req, res) => {
   });
 });
 
+// POST /api/v1/properties/:id/photos/generate-kling-prompt/:photoId
+// Analyzes the expanded photo with Claude Vision and returns a Kling 3.0
+// movement prompt following strict cinematography rules.
+// Synchronous — ~5s, well within Railway 60s timeout.
+router.post('/generate-kling-prompt/:photoId', requireAdmin, async (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+  const { space = '', description = '', wowFactor = 5 } = req.body;
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set' });
+  }
+
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const photo = expandedPhotos.find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ error: 'Photo not found in expanded photos' });
+
+  try {
+    const axios    = require('axios');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const claudeClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    // Download + resize for Claude Vision
+    const link   = await dropbox.getTemporaryLink(photo.expandedPath);
+    const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+    const resized = await sharp(Buffer.from(imgRes.data))
+      .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    const base64Image = resized.toString('base64');
+
+    const spaceCtx = space ? `Space type: ${space.replace(/_/g, ' ')}` : '';
+    const descCtx  = description ? `Description: ${description}` : '';
+    const wowCtx   = `WOW factor: ${wowFactor}/10`;
+
+    const response = await claudeClient.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
+          },
+          {
+            type: 'text',
+            text: `You are a luxury real estate video director specializing in Kling 3.0 AI video generation.
+
+Analyze this 9:16 property photo and generate ONE cinematic movement prompt following these STRICT rules:
+
+FIXED RULES:
+- ONE single movement per prompt — never combine two movements
+- Multi-shot is ALWAYS OFF
+- ALWAYS end with the exact anti-shake phrase: "Smooth gimbal-stabilized cinematic drone, no shake, no wobble, no handheld movement, perfectly fluid motion throughout"
+- Do NOT re-describe the photo — focus ONLY on camera movement and what it reveals
+- NEVER use: moves, goes, racing, sharply, quickly, rapidly
+- USE: orbit, dolly push, crane up, tracking lateral, pull-back, FPV forward
+
+MOVEMENT SELECTION GUIDE:
+- ORBIT: facades, entrances, architectural focal points
+- DOLLY PUSH: corridors, kitchens, one-point perspectives
+- CRANE UP: pools, exteriors, revealing scale from low to high
+- TRACKING LATERAL: pools, long facades, open floor plans
+- PULL-BACK + ASCENT: epic closing shot
+- FPV FORWARD: driveway, approach to facade
+
+PARALLAX: Add subtle depth/parallax layer whenever architecture or furnishings allow.
+
+PROMPT STRUCTURE:
+[Camera movement + direction]
+[What the movement reveals or emphasizes]
+[Parallax or depth note if applicable]
+Smooth gimbal-stabilized cinematic drone, no shake, no wobble, no handheld movement, perfectly fluid [movement] throughout, wide anamorphic lens, luxury real estate cinematography.
+
+MOVEMENT KEY MAPPING — pick the ONE best key from this list:
+- orbit → orbit
+- dolly push → dolly_forward
+- crane up / aerial → aerial_descent
+- tracking lateral left → pan_left
+- tracking lateral right → pan_right
+- pull-back → dolly_back
+- FPV forward → dolly_forward
+- slow zoom in → slow_zoom_in
+- slow zoom out → slow_zoom_out
+- static → static
+
+Photo context:
+${spaceCtx}
+${descCtx}
+${wowCtx}
+
+Respond ONLY with a raw JSON object, no markdown, no explanation:
+{
+  "klingPrompt": "the full prompt following the structure above",
+  "klingMovement": "one key from the mapping list above"
+}`,
+          },
+        ],
+      }],
+    });
+
+    const raw     = response.content[0].text.trim();
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    const parsed  = JSON.parse(cleaned);
+
+    console.log(`[generate-kling] ${photo.name} → ${parsed.klingMovement}: "${parsed.klingPrompt.slice(0, 80)}…"`);
+    res.json({ klingPrompt: parsed.klingPrompt, klingMovement: parsed.klingMovement });
+
+  } catch (err) {
+    console.error(`[generate-kling] Error for ${photo?.name}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/v1/properties/:id/photos/suggest-prompt/:photoId
 // Calls Claude Vision with the expanded image + current prompt + failed checks
 // and returns an improved Stability AI outpaint prompt.
