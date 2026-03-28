@@ -171,7 +171,7 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     status: 'done',
     meta: property.pipeline.step1_upload.meta,
   });
-  Property.updatePipelineStep(req.params.id, 'step2_claude', { status: 'in_progress', meta: {} });
+  Property.updatePipelineStep(req.params.id, 'step3_claude', { status: 'in_progress', meta: {} });
 
   try {
     const axios = require('axios');
@@ -183,17 +183,26 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     console.log(`[analyze] Starting analysis of ${photos.length} photos`);
     console.log(`[analyze] ANTHROPIC_API_KEY present: ${!!process.env.ANTHROPIC_API_KEY}`);
 
-    // Download photos from Dropbox as base64
+    // Download photos from Dropbox, resize for Claude, encode as base64
     const photoData = [];
     for (const photo of photos) {
       try {
         console.log(`[analyze] Fetching photo: ${photo.name} from ${photo.dropboxPath}`);
         const link = await dropbox.getTemporaryLink(photo.dropboxPath);
         const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
-        const base64 = Buffer.from(imgRes.data).toString('base64');
-        const sizeKB = Math.round(imgRes.data.byteLength / 1024);
-        console.log(`[analyze] Got photo ${photo.name}: ${sizeKB}KB, type: ${photo.mediaType}`);
-        photoData.push({ id: photo.id, name: photo.name, base64, mediaType: photo.mediaType || 'image/jpeg' });
+        const originalKB = Math.round(imgRes.data.byteLength / 1024);
+
+        // Resize to max 1500px on longest side, convert to JPEG 85% quality
+        // This dramatically reduces size: 5MB → ~150KB, speeds up Claude API calls
+        const resized = await sharp(Buffer.from(imgRes.data))
+          .resize(1500, 1500, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+        const resizedKB = Math.round(resized.byteLength / 1024);
+        console.log(`[analyze] Got photo ${photo.name}: ${originalKB}KB → resized ${resizedKB}KB`);
+
+        const base64 = resized.toString('base64');
+        photoData.push({ id: photo.id, name: photo.name, base64, mediaType: 'image/jpeg' });
       } catch (fetchErr) {
         console.error(`[analyze] Failed to fetch photo ${photo.name}:`, fetchErr.message);
         throw new Error(`Failed to fetch photo "${photo.name}": ${fetchErr.message}`);
@@ -204,7 +213,7 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     const { all, selected } = await analyzeAllPhotos(photoData);
     console.log(`[analyze] Claude Vision done. Total: ${all.length}, Selected: ${selected.length}`);
 
-    Property.updatePipelineStep(req.params.id, 'step2_claude', {
+    Property.updatePipelineStep(req.params.id, 'step3_claude', {
       status: 'done',
       meta: {
         analysisResults: all,
@@ -218,7 +227,7 @@ router.post('/analyze', requireAdmin, async (req, res) => {
     res.json({ ok: true, totalAnalyzed: all.length, totalSelected: selected.length, selected });
   } catch (err) {
     console.error('[analyze] FAILED:', err.message, err.stack);
-    Property.updatePipelineStep(req.params.id, 'step2_claude', {
+    Property.updatePipelineStep(req.params.id, 'step3_claude', {
       status: 'failed',
       meta: { error: err.message, stack: err.stack?.split('\n').slice(0, 5) },
     });

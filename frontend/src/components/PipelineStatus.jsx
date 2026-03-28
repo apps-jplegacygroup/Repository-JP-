@@ -1,7 +1,7 @@
 const STEPS = [
   { key: 'step1_upload',     label: '1 Upload' },
-  { key: 'step2_claude',     label: '2 Claude' },
-  { key: 'step3_stability',  label: '3 Expand' },
+  { key: 'step2_stability',  label: '2 Expand' },
+  { key: 'step3_claude',     label: '3 Claude' },
   { key: 'step4_qa',         label: '4 QA' },
   { key: 'step5_sequence',   label: '5 Sequence' },
   { key: 'step6_kling',      label: '6 Kling' },

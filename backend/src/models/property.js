@@ -26,8 +26,8 @@ function writeAll(properties) {
 
 const PIPELINE_STEPS = [
   'step1_upload',
-  'step2_claude',
-  'step3_stability',
+  'step2_stability',  // Expand 4:3 → 9:16 (runs before Claude analysis)
+  'step3_claude',     // Claude Vision analysis of expanded photos
   'step4_qa',
   'step5_sequence',
   'step6_kling',

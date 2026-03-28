@@ -28,7 +28,9 @@ export default function PropertyDetail() {
 
   const [orderedPhotos, setOrderedPhotos] = useState(null);
   const photos = orderedPhotos ?? (property?.pipeline?.step1_upload?.meta?.photos || []);
-  const analysisData = property?.pipeline?.step2_claude?.meta || {};
+  const expandData = property?.pipeline?.step2_stability?.meta || {};
+  const hasExpand = expandData.expandedPhotos?.length > 0;
+  const analysisData = property?.pipeline?.step3_claude?.meta || {};
   const hasAnalysis = analysisData.selectedPhotos?.length > 0;
 
   async function handleFilesSelected(files) {
@@ -107,8 +109,9 @@ export default function PropertyDetail() {
         {/* Tabs */}
         <div className="flex gap-1 bg-gray-900 rounded-xl p-1 w-fit">
           {[
-            { key: 'upload', label: `Upload (${photos.length})` },
-            { key: 'analysis', label: hasAnalysis ? `Analysis (${analysisData.totalSelected})` : 'Analysis' },
+            { key: 'upload', label: `1 Upload (${photos.length})` },
+            { key: 'expand', label: hasExpand ? `2 Expand (${expandData.expandedPhotos.length})` : '2 Expand' },
+            { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : '3 Analysis' },
           ].map(tab => (
             <button
               key={tab.key}
@@ -189,6 +192,27 @@ export default function PropertyDetail() {
           </div>
         )}
 
+        {/* Expand tab — Step 2: Stability AI 4:3 → 9:16 */}
+        {activeTab === 'expand' && (
+          <div className="text-center py-20">
+            <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+              </svg>
+            </div>
+            <p className="text-gray-400 font-medium">Stability AI Expand — Coming Soon</p>
+            <p className="text-gray-600 text-sm mt-1 max-w-sm mx-auto">
+              Generative expand will convert all selected photos from 4:3 to 9:16 vertical format using Stability AI.
+              Complete this step before running Claude Vision analysis.
+            </p>
+            {photos.length > 0 && (
+              <div className="mt-4 bg-gray-900 rounded-xl px-5 py-3 inline-block">
+                <p className="text-gray-400 text-sm">{photos.length} photos ready to expand</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Analysis tab */}
         {activeTab === 'analysis' && (
           <div>
@@ -199,7 +223,7 @@ export default function PropertyDetail() {
               />
             ) : (
               <div className="text-center py-20 text-gray-500">
-                No analysis yet. Upload photos and click "Analyze with Claude Vision".
+                No analysis yet. Upload photos and click "Analyze with Claude Vision" in the Upload tab.
               </div>
             )}
           </div>
