@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import client from '../api/client';
 import PipelineStatus from '../components/PipelineStatus.jsx';
@@ -11,6 +12,7 @@ function completedSteps(pipeline) {
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [properties, setProperties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -102,7 +104,7 @@ export default function Dashboard() {
             {properties.map(property => {
               const done = completedSteps(property.pipeline);
               return (
-                <div key={property.id} className="bg-gray-900 border border-gray-800 rounded-2xl p-5 hover:border-gray-700 transition-colors">
+                <div key={property.id} onClick={() => navigate(`/properties/${property.id}`)} className="bg-gray-900 border border-gray-800 rounded-2xl p-5 hover:border-amber-500/50 hover:bg-gray-800/50 transition-all cursor-pointer">
                   {/* Address */}
                   <div className="flex items-start justify-between gap-2">
                     <h2 className="text-white font-semibold text-sm leading-snug">{property.address}</h2>
