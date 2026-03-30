@@ -324,87 +324,113 @@ router.post('/expand', requireAdmin, async (req, res) => {
   });
   res.status(202).json({ ok: true, total: rawPhotos.length, pending: pending.length, alreadyDone: alreadyExp.length });
 
-  // ---- Background processing (after response sent) ----
-  ;(async () => {
-    const axios = require('axios');
-    const paths = buildPaths(property);
-    const expandedPhotos = [...alreadyExp]; // start with already-done photos
-    const errors = [];
-    let creditsExhausted = false;
+  // ---- Background processing (true fire-and-forget — runs on Railway
+  //      independently of the HTTP connection; user can navigate away) ----
+  setImmediate(() => {
+    (async () => {
+      const axios = require('axios');
+      const paths = buildPaths(property);
+      const expandedPhotos = [...alreadyExp]; // start with already-done photos
+      const errors = [];
+      let creditsExhausted = false;
 
-    for (let i = 0; i < pending.length; i++) {
-      const photo = pending[i];
+      // Wrap a promise with a hard timeout
+      function withTimeout(promise, ms) {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error(`Timed out after ${ms / 1000}s`)), ms);
+          promise.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+        });
+      }
 
-      if (creditsExhausted) {
-        // 402 already hit — mark remaining as failed without calling API
-        errors.push({ name: photo.name, error: 'Skipped — Stability AI credits exhausted' });
+      // Process a single photo: download → expand → upload. Throws on failure.
+      async function processOnePhoto(photo) {
+        const link = await dropbox.getTemporaryLink(photo.dropboxPath);
+        const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+        const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data));
+        const expandedPath = `${paths.expanded}/${photo.id}_9x16.jpg`;
+        await dropbox.uploadFile(expandedBuffer, expandedPath);
+        const thumbnailUrl = await dropbox.getTemporaryLink(expandedPath);
+        return { expandedPath, thumbnailUrl };
+      }
+
+      for (let i = 0; i < pending.length; i++) {
+        const photo = pending[i];
+
+        if (creditsExhausted) {
+          errors.push({ name: photo.name, error: 'Skipped — Stability AI credits exhausted' });
+          Property.updatePipelineStep(propertyId, 'step2_stability', {
+            status: 'in_progress',
+            meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
+          });
+          continue;
+        }
+
+        console.log(`[expand] Processing ${expandedPhotos.length + 1}/${rawPhotos.length}: ${photo.name}`);
+
+        let result = null;
+        let lastErr = null;
+
+        // Try up to 2 attempts (original + 1 retry), each with a 90s outer timeout
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            result = await withTimeout(processOnePhoto(photo), 90_000);
+            break; // success
+          } catch (err) {
+            lastErr = err;
+            if (err instanceof StabilityError && err.isCreditsError) break; // no point retrying
+            if (attempt < 2) {
+              console.warn(`[expand] attempt ${attempt} failed for ${photo.name}: ${err.message} — retrying…`);
+              await new Promise(r => setTimeout(r, 3000)); // brief pause before retry
+            }
+          }
+        }
+
+        if (result) {
+          console.log(`[expand] ✓ ${photo.name}`);
+          expandedPhotos.push({
+            id: photo.id,
+            name: photo.name,
+            originalPath: photo.dropboxPath,
+            expandedPath: result.expandedPath,
+            thumbnailUrl: result.thumbnailUrl,
+            expandedAt: new Date().toISOString(),
+          });
+        } else {
+          console.error(`[expand] ✗ ${photo.name} (both attempts failed): ${lastErr.message}`);
+          if (lastErr instanceof StabilityError && lastErr.isCreditsError) {
+            creditsExhausted = true;
+            errors.push({ name: photo.name, error: 'Stability AI credits exhausted — purchase more at platform.stability.ai/account/credits' });
+          } else {
+            errors.push({ name: photo.name, error: lastErr.message });
+          }
+        }
+
+        // Persist progress after every photo so resume works after a restart
         Property.updatePipelineStep(propertyId, 'step2_stability', {
           status: 'in_progress',
           meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
         });
-        continue;
       }
 
-      try {
-        console.log(`[expand] Processing ${expandedPhotos.length + 1}/${rawPhotos.length}: ${photo.name}`);
-
-        // 1. Download raw photo from Dropbox
-        const link = await dropbox.getTemporaryLink(photo.dropboxPath);
-        const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
-
-        // 2. Expand 4:3 → 9:16 with Stability AI (built-in retry for 429/5xx)
-        const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data));
-
-        // 3. Upload expanded photo to Dropbox 02_fotos_expandidas
-        const expandedPath = `${paths.expanded}/${photo.id}_9x16.jpg`;
-        await dropbox.uploadFile(expandedBuffer, expandedPath);
-        const thumbnailUrl = await dropbox.getTemporaryLink(expandedPath);
-        console.log(`[expand] ✓ ${photo.name}`);
-
-        expandedPhotos.push({
-          id: photo.id,
-          name: photo.name,
-          originalPath: photo.dropboxPath,
-          expandedPath,
-          thumbnailUrl,
-          expandedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        console.error(`[expand] ✗ ${photo.name}: ${err.message}`);
-
-        if (err instanceof StabilityError && err.isCreditsError) {
-          creditsExhausted = true;
-          errors.push({ name: photo.name, error: 'Stability AI credits exhausted — purchase more at platform.stability.ai/account/credits' });
-        } else {
-          errors.push({ name: photo.name, error: err.message });
-        }
-      }
-
-      // Update progress after each photo
+      const finalStatus = expandedPhotos.length > 0 ? 'done' : 'failed';
       Property.updatePipelineStep(propertyId, 'step2_stability', {
-        status: 'in_progress',
-        meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
+        status: finalStatus,
+        meta: {
+          expandedPhotos,
+          errors,
+          progress: rawPhotos.length,
+          total: rawPhotos.length,
+          expandedAt: new Date().toISOString(),
+          creditsExhausted,
+        },
       });
-    }
-
-    const finalStatus = expandedPhotos.length > 0 ? 'done' : 'failed';
-    Property.updatePipelineStep(propertyId, 'step2_stability', {
-      status: finalStatus,
-      meta: {
-        expandedPhotos,
-        errors,
-        progress: rawPhotos.length,
-        total: rawPhotos.length,
-        expandedAt: new Date().toISOString(),
-        creditsExhausted,
-      },
-    });
-    console.log(`[expand] Done. ${expandedPhotos.length}/${rawPhotos.length} expanded. Errors: ${errors.length}. Status: ${finalStatus}`);
-  })().catch(err => {
-    console.error('[expand] Fatal background error:', err.message);
-    Property.updatePipelineStep(propertyId, 'step2_stability', {
-      status: 'failed',
-      meta: { ...property.pipeline.step2_stability?.meta, error: err.message },
+      console.log(`[expand] Done. ${expandedPhotos.length}/${rawPhotos.length} expanded. Errors: ${errors.length}. Status: ${finalStatus}`);
+    })().catch(err => {
+      console.error('[expand] Fatal background error:', err.message);
+      Property.updatePipelineStep(propertyId, 'step2_stability', {
+        status: 'failed',
+        meta: { ...Property.getById(propertyId)?.pipeline?.step2_stability?.meta, error: err.message },
+      });
     });
   });
 });

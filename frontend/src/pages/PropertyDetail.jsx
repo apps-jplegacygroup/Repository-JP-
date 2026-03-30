@@ -454,21 +454,34 @@ export default function PropertyDetail() {
 
             {/* In-progress state — shows immediately on click (expanding) OR after first poll (isExpanding) */}
             {(isExpanding || expanding) && (
-              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6">
-                <div className="flex items-center gap-4">
-                  <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                  </svg>
-                  <div>
-                    <p className="text-blue-400 font-semibold">Expanding photos with Stability AI…</p>
-                    <p className="text-gray-400 text-sm mt-0.5">
-                      {expandMeta.progress || 0} of {expandMeta.total || photos.length} photos — this may take several minutes
-                    </p>
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                    </svg>
+                    <div>
+                      <p className="text-blue-400 font-semibold">Expanding photos with Stability AI…</p>
+                      <p className="text-gray-400 text-sm mt-0.5">
+                        {expandMeta.progress || 0} of {expandMeta.total || photos.length} photos — this may take several minutes
+                      </p>
+                    </div>
                   </div>
+                  {/* Restart button — visible during in-progress for stuck/interrupted jobs */}
+                  {user?.role === 'admin' && (expandMeta.progress || 0) > 0 && (
+                    <button
+                      onClick={handleExpand}
+                      disabled={expanding}
+                      title="If the job is stuck or was interrupted, click to resume from where it left off"
+                      className="shrink-0 text-xs text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-400/50 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      ↺ Restart
+                    </button>
+                  )}
                 </div>
                 {/* Progress bar — starts at 0%, updates every 4s via polling */}
-                <div className="mt-4 h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-blue-500 rounded-full transition-all duration-500"
                     style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || photos.length)) * 100}%` }}

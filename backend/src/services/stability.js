@@ -56,7 +56,7 @@ async function expandPhoto(imageBuffer, prompt = '') {
           Accept: 'image/*',
         },
         body: form,
-        signal: AbortSignal.timeout(120_000), // 2 min per image
+        signal: AbortSignal.timeout(45_000), // 45s per API call
       }
     );
 
