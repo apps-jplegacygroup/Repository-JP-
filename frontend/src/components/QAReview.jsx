@@ -41,6 +41,8 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
 
   const [saving, setSaving] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
+  const [deletedIds, setDeletedIds] = useState(new Set());
+  const [deletingIds, setDeletingIds] = useState(new Set());
   const pollRef = useRef(null);
 
   // Sync external step4 decisions (after reexpand completes via polling)
@@ -129,6 +131,20 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
     }
   }
 
+  async function handleDelete(photoId) {
+    if (!window.confirm('¿Eliminar esta foto permanentemente?')) return;
+    setDeletingIds(prev => new Set(prev).add(photoId));
+    try {
+      await client.delete(`/properties/${propertyId}/photos/${photoId}`);
+      setDeletedIds(prev => new Set(prev).add(photoId));
+      setDecisions(prev => { const next = { ...prev }; delete next[photoId]; return next; });
+    } catch (err) {
+      alert(err.response?.data?.error || 'No se pudo eliminar la foto');
+    } finally {
+      setDeletingIds(prev => { const next = new Set(prev); next.delete(photoId); return next; });
+    }
+  }
+
   async function persistDecisions(dec, showOk = true) {
     const toSave = {};
     for (const [pid, d] of Object.entries(dec)) {
@@ -140,8 +156,8 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
         reexpandError: d.reexpandError,
       };
     }
-    const approved = selected.filter(p => dec[p.photoId]?.status === 'approved');
-    const rejected = selected.filter(p => dec[p.photoId]?.status === 'rejected');
+    const approved = activeSelected.filter(p => dec[p.photoId]?.status === 'approved');
+    const rejected = activeSelected.filter(p => dec[p.photoId]?.status === 'rejected');
     await client.patch(`/properties/${propertyId}/pipeline/step4_qa`, {
       status: 'in_progress',
       meta: { decisions: toSave, approvedPhotos: approved, rejectedPhotos: rejected },
@@ -163,8 +179,8 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
       for (const [pid, d] of Object.entries(decisions)) {
         toSave[pid] = { status: d.status, customPrompt: d.customPrompt, checks: d.checks };
       }
-      const approved = selected.filter(p => decisions[p.photoId]?.status === 'approved');
-      const rejected = selected.filter(p => decisions[p.photoId]?.status === 'rejected');
+      const approved = activeSelected.filter(p => decisions[p.photoId]?.status === 'approved');
+      const rejected = activeSelected.filter(p => decisions[p.photoId]?.status === 'rejected');
       // Only approved photos advance to the next step
       await client.patch(`/properties/${propertyId}/pipeline/step4_qa`, {
         status: 'done',
@@ -182,12 +198,13 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
     finally { setSaving(false); }
   }
 
-  // Stats
-  const approvedCount  = selected.filter(p => decisions[p.photoId]?.status === 'approved').length;
-  const rejectedCount  = selected.filter(p => decisions[p.photoId]?.status === 'rejected').length;
-  const pendingCount   = selected.length - approvedCount - rejectedCount;
+  // Stats (exclude deleted photos)
+  const activeSelected = selected.filter(p => !deletedIds.has(p.photoId));
+  const approvedCount  = activeSelected.filter(p => decisions[p.photoId]?.status === 'approved').length;
+  const rejectedCount  = activeSelected.filter(p => decisions[p.photoId]?.status === 'rejected').length;
+  const pendingCount   = activeSelected.length - approvedCount - rejectedCount;
   const decidedCount   = approvedCount + rejectedCount;
-  const approvalRate   = selected.length > 0 ? approvedCount / selected.length : 0;
+  const approvalRate   = activeSelected.length > 0 ? approvedCount / activeSelected.length : 0;
   // Show "Continuar" when ≥80% approved OR when all photos have a decision (none pending)
   const canContinue    = selected.length > 0 && (approvalRate >= 0.8 || pendingCount === 0);
   const anyReexpanding = Object.values(decisions).some(d => d.reexpanding);
@@ -228,7 +245,7 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
 
       {/* ── Photo grid ─────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-        {selected.map(photo => {
+        {selected.filter(p => !deletedIds.has(p.photoId)).map(photo => {
           const d         = decisions[photo.photoId] || {};
           const isApproved = d.status === 'approved';
           const isRejected = d.status === 'rejected';
@@ -287,7 +304,7 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
               <div className="p-3 space-y-2.5 flex-1 flex flex-col">
                 <p className="text-gray-400 text-[10px] truncate leading-tight">{photo.name}</p>
 
-                {/* Approve / Reject buttons */}
+                {/* Approve / Reject / Delete buttons */}
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => setDecision(photo.photoId, { status: isApproved ? 'pending' : 'approved' })}
@@ -310,6 +327,14 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                     }`}
                   >
                     ✗ Rechazar
+                  </button>
+                  <button
+                    onClick={() => handleDelete(photo.photoId)}
+                    disabled={deletingIds.has(photo.photoId) || d.reexpanding}
+                    title="Eliminar foto"
+                    className="px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 bg-gray-700 text-gray-400 hover:bg-red-900/60 hover:text-red-400"
+                  >
+                    {deletingIds.has(photo.photoId) ? <SpinnerIcon className="w-3 h-3" /> : '🗑'}
                   </button>
                 </div>
 
