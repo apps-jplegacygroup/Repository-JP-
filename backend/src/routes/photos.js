@@ -183,6 +183,8 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
       const imageEntries = await dropbox.listSharedFolderImages(sharedLink);
       console.log(`[import-dropbox] found ${imageEntries.length} image(s) in shared folder`);
 
+      saveProgress(1, `Found ${imageEntries.length} image${imageEntries.length !== 1 ? 's' : ''} — starting download…`);
+
       if (imageEntries.length === 0) {
         const current = Property.getById(propertyId);
         Property.updatePipelineStep(propertyId, 'step1_upload', {
