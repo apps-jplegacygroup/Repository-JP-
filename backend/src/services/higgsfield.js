@@ -1,5 +1,5 @@
 const BASE_URL = 'https://platform.higgsfield.ai';
-const MODEL    = 'kling-video/v2.1/pro/image-to-video';
+const MODEL    = 'kling-video/v3.0/pro/image-to-video';
 
 // Retry-able HTTP errors
 class HiggsfieldError extends Error {
