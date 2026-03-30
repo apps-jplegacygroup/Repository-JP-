@@ -16,30 +16,47 @@ function _invalidateToken() {
 }
 
 async function TOKEN() {
-  // Fallback: static token (no refresh credentials configured)
+  // Require refresh token — no fallback to static DROPBOX_TOKEN
   if (!process.env.DROPBOX_REFRESH_TOKEN) {
-    return process.env.DROPBOX_TOKEN;
+    console.error('[dropbox] DROPBOX_REFRESH_TOKEN is not set! All Dropbox calls will fail.');
+    throw new Error('DROPBOX_REFRESH_TOKEN is not configured');
   }
 
   // Use cached token if still valid
   const now = Date.now();
   if (_cachedToken && now < _cacheExpiry) return _cachedToken;
 
-  const res = await axios.post(
-    'https://api.dropboxapi.com/oauth2/token',
-    new URLSearchParams({
-      grant_type:    'refresh_token',
-      refresh_token: process.env.DROPBOX_REFRESH_TOKEN,
-      client_id:     process.env.DROPBOX_APP_KEY,
-      client_secret: process.env.DROPBOX_APP_SECRET,
-    }),
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+  console.log('[dropbox] fetching fresh token via refresh_token grant...');
+  console.log('[dropbox] DROPBOX_APP_KEY set:', !!process.env.DROPBOX_APP_KEY);
+  console.log('[dropbox] DROPBOX_APP_SECRET set:', !!process.env.DROPBOX_APP_SECRET);
+  console.log('[dropbox] DROPBOX_REFRESH_TOKEN prefix:', process.env.DROPBOX_REFRESH_TOKEN?.slice(0, 10));
 
-  _cachedToken = res.data.access_token;
-  _cacheExpiry = Date.now() + 3 * 60 * 60 * 1000; // 3 hours
-  console.log('[dropbox] access token refreshed');
-  return _cachedToken;
+  try {
+    const res = await axios.post(
+      'https://api.dropboxapi.com/oauth2/token',
+      new URLSearchParams({
+        grant_type:    'refresh_token',
+        refresh_token: process.env.DROPBOX_REFRESH_TOKEN,
+        client_id:     process.env.DROPBOX_APP_KEY,
+        client_secret: process.env.DROPBOX_APP_SECRET,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    if (!res.data.access_token) {
+      console.error('[dropbox] refresh response missing access_token:', JSON.stringify(res.data));
+      throw new Error('Dropbox token refresh returned no access_token');
+    }
+
+    _cachedToken = res.data.access_token;
+    _cacheExpiry = Date.now() + 3 * 60 * 60 * 1000; // 3 hours
+    console.log('[dropbox] token refreshed successfully, expires_in:', res.data.expires_in);
+    return _cachedToken;
+  } catch (err) {
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[dropbox] refresh failed:', detail);
+    throw new Error(`Dropbox token refresh failed: ${detail}`);
+  }
 }
 
 // Helper: extract readable Dropbox error, throwing with status attached
@@ -59,16 +76,17 @@ async function withRetry401(callFn) {
   try {
     return await callFn(await TOKEN());
   } catch (err) {
-    if (err.response?.status === 401 && process.env.DROPBOX_REFRESH_TOKEN) {
-      console.warn('[dropbox] 401 received — invalidating token cache and retrying…');
+    // Check both the raw axios response status AND the re-thrown dropboxStatus
+    const status = err.response?.status ?? err.dropboxStatus;
+    if (status === 401) {
+      console.warn('[dropbox] 401 received — invalidating token cache and retrying with fresh token…');
       _invalidateToken();
-      try {
-        return await callFn(await TOKEN());
-      } catch (retryErr) {
-        dropboxError(retryErr);
-      }
+      // On retry, let errors propagate naturally
+      return await callFn(await TOKEN()).catch(retryErr => dropboxError(retryErr));
     }
-    dropboxError(err);
+    // Not a 401 — if it came from axios, enhance it; if already enhanced, rethrow
+    if (err.response) dropboxError(err);
+    throw err;
   }
 }
 

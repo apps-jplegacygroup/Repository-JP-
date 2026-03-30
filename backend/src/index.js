@@ -63,9 +63,10 @@ app.get('/debug/env', async (_req, res) => {
   res.json({
     jwt_secret_exists: !!process.env.JWT_SECRET,
     jorge_pass_exists: !!process.env.USER_JORGE_PASS,
-    dropbox_token_exists: !!process.env.DROPBOX_TOKEN,
-    dropbox_token_length: process.env.DROPBOX_TOKEN?.length ?? 0,
-    dropbox_token_prefix: process.env.DROPBOX_TOKEN?.slice(0, 10),
+    dropbox_refresh_token_exists: !!process.env.DROPBOX_REFRESH_TOKEN,
+    dropbox_refresh_token_prefix: process.env.DROPBOX_REFRESH_TOKEN?.slice(0, 10),
+    dropbox_app_key_exists: !!process.env.DROPBOX_APP_KEY,
+    dropbox_app_secret_exists: !!process.env.DROPBOX_APP_SECRET,
     dropbox_status: dropboxStatus,
     dropbox_account: dropboxAccount,
     dropbox_error: dropboxError,
@@ -112,4 +113,10 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[video-pipeline-api] Running on port ${PORT}`);
+
+  // Verify Dropbox token on startup
+  const { testToken } = require('./services/dropbox');
+  testToken()
+    .then(data => console.log('[startup] Dropbox token OK — account uid:', data?.result || JSON.stringify(data)))
+    .catch(err => console.error('[startup] Dropbox token FAILED:', err.message));
 });
