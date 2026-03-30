@@ -706,7 +706,7 @@ router.post('/suggest-prompt/:photoId', requireAdmin, async (req, res) => {
 
     const response = await claudeClient.messages.create({
       model: 'claude-opus-4-5',
-      max_tokens: 256,
+      max_tokens: 300,
       messages: [{
         role: 'user',
         content: [
@@ -728,8 +728,9 @@ Analiza la imagen y genera un prompt mejorado para Stability AI outpaint que cor
 - Mencionar elementos arquitectónicos o naturales que se vean en la foto para dar contexto
 - Lograr que la expansión se mezcle perfectamente con la imagen original
 - Ser específico para este espacio/ambiente (no genérico)
+- Siempre incluir: "Maintain exact floor material continuity (same color, texture, and pattern), preserve furniture style and scale, match wall colors and textures seamlessly, no abrupt transitions."
 
-Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin comillas, sin texto adicional. Máximo 2 oraciones.`,
+Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin comillas, sin texto adicional. Máximo 3 oraciones.`,
           },
         ],
       }],
@@ -744,6 +745,30 @@ Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin co
     res.status(500).json({ error: err.message });
   }
 });
+
+// Translate any prompt to English using Claude Haiku (fast + cheap).
+// If the text is already in English or is empty, returns it unchanged.
+async function translatePromptToEnglish(text) {
+  if (!text || !text.trim()) return text;
+  try {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const claudeClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const response = await claudeClient.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{
+        role: 'user',
+        content: `Translate the following text to English for use as a Stability AI image generation prompt. If it is already in English, return it exactly as-is. Return ONLY the translated text — no explanations, no quotes, no extra words.\n\n${text}`,
+      }],
+    });
+    const translated = response.content[0].text.trim();
+    console.log(`[translate-prompt] "${text.slice(0, 60)}" → "${translated.slice(0, 60)}"`);
+    return translated;
+  } catch (err) {
+    console.error(`[translate-prompt] Failed, using original: ${err.message}`);
+    return text; // fallback: use original rather than fail
+  }
+}
 
 // POST /api/v1/properties/:id/photos/reexpand/:photoId
 // Re-expands a single previously-expanded photo with an optional custom prompt.
@@ -779,8 +804,11 @@ router.post('/reexpand/:photoId', requireAdmin, async (req, res) => {
     const link = await dropbox.getTemporaryLink(photo.originalPath);
     const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
 
-    // Re-expand with the new custom prompt
-    const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data), prompt);
+    // Translate prompt to English (Stability AI only accepts English)
+    const englishPrompt = await translatePromptToEnglish(prompt);
+
+    // Re-expand with the translated prompt
+    const expandedBuffer = await expandPhoto(Buffer.from(imgRes.data), englishPrompt);
 
     // Overwrite the existing expanded path in Dropbox
     await dropbox.uploadFile(expandedBuffer, photo.expandedPath);
