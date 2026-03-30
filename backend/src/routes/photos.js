@@ -131,6 +131,133 @@ router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, re
   res.json({ uploaded: uploaded.length, errors, photos: allPhotos });
 });
 
+// POST /api/v1/properties/:id/photos/import-dropbox
+// Accepts { sharedLink } — returns 202 immediately, imports images in background
+router.post('/import-dropbox', requireAdmin, async (req, res) => {
+  const property = Property.getById(req.params.id);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const { sharedLink } = req.body;
+  if (!sharedLink || !sharedLink.includes('dropbox.com')) {
+    return res.status(400).json({ error: 'sharedLink must be a valid Dropbox URL' });
+  }
+
+  // Mark import as started before responding
+  Property.updatePipelineStep(req.params.id, 'step1_upload', {
+    status: 'in_progress',
+    meta: {
+      ...property.pipeline.step1_upload?.meta,
+      importing: true,
+      importProgress: 'Listing images in Dropbox folder…',
+      importError: null,
+    },
+  });
+
+  res.status(202).json({ message: 'Import started' });
+
+  // Background job
+  (async () => {
+    const propertyId = req.params.id;
+
+    function setImportProgress(msg) {
+      const current = Property.getById(propertyId);
+      if (!current) return;
+      Property.updatePipelineStep(propertyId, 'step1_upload', {
+        status: 'in_progress',
+        meta: { ...current.pipeline.step1_upload?.meta, importing: true, importProgress: msg, importError: null },
+      });
+    }
+
+    try {
+      // 1 — Ensure Dropbox folders exist
+      const currentProp = Property.getById(propertyId);
+      const paths = await ensurePropertyFolders(currentProp);
+
+      // 2 — List images in shared folder
+      setImportProgress('Listing images in Dropbox folder…');
+      const imageEntries = await dropbox.listSharedFolderImages(sharedLink);
+
+      if (imageEntries.length === 0) {
+        const current = Property.getById(propertyId);
+        Property.updatePipelineStep(propertyId, 'step1_upload', {
+          status: current?.pipeline?.step1_upload?.meta?.photos?.length > 0 ? 'in_progress' : 'pending',
+          meta: { ...current?.pipeline?.step1_upload?.meta, importing: false, importProgress: null, importError: 'No images found in that Dropbox folder.' },
+        });
+        return;
+      }
+
+      // 3 — Download, validate, and upload each image
+      const uploaded = [];
+      const errors = [];
+
+      for (let i = 0; i < imageEntries.length; i++) {
+        const entry = imageEntries[i];
+        setImportProgress(`Downloading ${i + 1} of ${imageEntries.length}: ${entry.name}`);
+
+        try {
+          // Download from shared folder
+          const buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
+
+          // Validate resolution
+          const meta = await sharp(buffer).metadata();
+          const minDim = 1000;
+          if (meta.width < minDim || meta.height < minDim) {
+            errors.push({ name: entry.name, error: `Resolution too low: ${meta.width}x${meta.height} (min ${minDim}px)` });
+            continue;
+          }
+
+          const photoId = uuidv4();
+          const ext = entry.name.split('.').pop().toLowerCase() || 'jpg';
+          const dropboxPath = `${paths.raw}/${photoId}.${ext}`;
+
+          await dropbox.uploadFile(buffer, dropboxPath);
+          const thumbnailUrl = await dropbox.getTemporaryLink(dropboxPath);
+
+          uploaded.push({
+            id: photoId,
+            name: entry.name,
+            dropboxPath,
+            thumbnailUrl,
+            width: meta.width,
+            height: meta.height,
+            size: entry.size,
+            mediaType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+            uploadedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          errors.push({ name: entry.name, error: err.message });
+        }
+      }
+
+      // 4 — Merge with existing photos
+      const currentAfter = Property.getById(propertyId);
+      const existing = currentAfter?.pipeline?.step1_upload?.meta?.photos || [];
+      const allPhotos = [...existing, ...uploaded];
+
+      Property.updatePipelineStep(propertyId, 'step1_upload', {
+        status: allPhotos.length > 0 ? 'in_progress' : 'pending',
+        meta: {
+          photos: allPhotos,
+          dropboxFolders: paths,
+          importing: false,
+          importProgress: null,
+          importError: errors.length > 0 && uploaded.length === 0 ? 'All images failed to import.' : null,
+          importSummary: { imported: uploaded.length, failed: errors.length, errors },
+        },
+      });
+
+      console.log(`[import-dropbox] ${propertyId}: imported ${uploaded.length}, failed ${errors.length}`);
+    } catch (err) {
+      console.error('[import-dropbox] error:', err.message);
+      const current = Property.getById(propertyId);
+      Property.updatePipelineStep(propertyId, 'step1_upload', {
+        status: current?.pipeline?.step1_upload?.meta?.photos?.length > 0 ? 'in_progress' : 'pending',
+        meta: { ...current?.pipeline?.step1_upload?.meta, importing: false, importProgress: null, importError: err.message },
+      });
+    }
+  })();
+});
+
 // GET /api/v1/properties/:id/photos
 router.get('/', (req, res) => {
   const property = Property.getById(req.params.id);

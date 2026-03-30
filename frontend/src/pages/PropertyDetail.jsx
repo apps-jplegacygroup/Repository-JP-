@@ -25,6 +25,9 @@ export default function PropertyDetail() {
   const [uploadResult, setUploadResult] = useState(null);
   const [activeTab, setActiveTab] = useState('upload');
   const [orderedPhotos, setOrderedPhotos] = useState(null);
+  const [uploadMode, setUploadMode] = useState('manual'); // 'manual' | 'dropbox'
+  const [dropboxLink, setDropboxLink] = useState('');
+  const [importing, setImporting] = useState(false);
 
   const pollRef = useRef(null);
 
@@ -36,13 +39,15 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step2_stability, step3_claude, or step7_higgsfield is in_progress
+  // Poll while step1 importing or step2/3/7/8 are in_progress
   useEffect(() => {
+    const step1Importing = property?.pipeline?.step1_upload?.meta?.importing === true;
     const step2Status = property?.pipeline?.step2_stability?.status;
     const step3Status = property?.pipeline?.step3_claude?.status;
     const step7Status = property?.pipeline?.step7_higgsfield?.status;
     const step8Status = property?.pipeline?.step8_render?.status;
-    const shouldPoll  = step2Status === 'in_progress'
+    const shouldPoll  = step1Importing
+                     || step2Status === 'in_progress'
                      || step3Status === 'in_progress'
                      || step7Status === 'in_progress'
                      || step8Status === 'in_progress';
@@ -56,13 +61,15 @@ export default function PropertyDetail() {
           try {
             const { data } = await client.get(`/properties/${id}`);
             setProperty(data.property);
+            const s1Importing = data.property.pipeline.step1_upload?.meta?.importing === true;
             const s2 = data.property.pipeline.step2_stability?.status;
             const s3 = data.property.pipeline.step3_claude?.status;
             const s7 = data.property.pipeline.step7_higgsfield?.status;
             const s8 = data.property.pipeline.step8_render?.status;
-            if (s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
+            if (!s1Importing && s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
               clearInterval(pollRef.current);
               pollRef.current = null;
+              setImporting(false);
               setExpanding(false);
               setAnalyzing(false);
               if (s3 === 'done') setActiveTab('analysis');
@@ -85,6 +92,7 @@ export default function PropertyDetail() {
       }
     };
   }, [
+    property?.pipeline?.step1_upload?.meta?.importing,
     property?.pipeline?.step2_stability?.status,
     property?.pipeline?.step3_claude?.status,
     property?.pipeline?.step7_higgsfield?.status,
@@ -175,6 +183,19 @@ export default function PropertyDetail() {
       setUploadResult({ error: err.response?.data?.error || 'Upload failed' });
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleDropboxImport() {
+    if (!dropboxLink.trim()) return;
+    setImporting(true);
+    try {
+      await client.post(`/properties/${id}/photos/import-dropbox`, { sharedLink: dropboxLink.trim() });
+      setDropboxLink('');
+      // Polling will pick up progress via step1_upload.meta.importing
+    } catch (err) {
+      setImporting(false);
+      alert(err.response?.data?.error || 'Import failed');
     }
   }
 
@@ -274,7 +295,84 @@ export default function PropertyDetail() {
         {activeTab === 'upload' && (
           <div className="space-y-6">
             {user?.role === 'admin' && (
-              <PhotoUploader onFilesSelected={handleFilesSelected} uploading={uploading} />
+              <>
+                {/* Upload mode toggle */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setUploadMode('manual')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${uploadMode === 'manual' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    Upload Files
+                  </button>
+                  <button
+                    onClick={() => setUploadMode('dropbox')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${uploadMode === 'dropbox' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'}`}
+                  >
+                    Import from Dropbox
+                  </button>
+                </div>
+
+                {uploadMode === 'manual' && (
+                  <PhotoUploader onFilesSelected={handleFilesSelected} uploading={uploading} />
+                )}
+
+                {uploadMode === 'dropbox' && (
+                  <div className="space-y-3">
+                    {/* Importing progress */}
+                    {(importing || property?.pipeline?.step1_upload?.meta?.importing) && (
+                      <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-5">
+                        <div className="flex items-center gap-3">
+                          <svg className="w-5 h-5 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                          </svg>
+                          <div>
+                            <p className="text-blue-400 font-semibold">Importing from Dropbox…</p>
+                            <p className="text-gray-400 text-sm mt-0.5">{property?.pipeline?.step1_upload?.meta?.importProgress || 'Processing…'}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Import summary */}
+                    {!importing && !property?.pipeline?.step1_upload?.meta?.importing && property?.pipeline?.step1_upload?.meta?.importSummary && (
+                      <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
+                        <p className="text-green-400 font-medium">
+                          {property.pipeline.step1_upload.meta.importSummary.imported} photos imported from Dropbox
+                        </p>
+                        {property.pipeline.step1_upload.meta.importSummary.failed > 0 && (
+                          <p className="text-yellow-400 text-sm mt-1">{property.pipeline.step1_upload.meta.importSummary.failed} skipped (low resolution or error)</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Import error */}
+                    {property?.pipeline?.step1_upload?.meta?.importError && (
+                      <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">{property.pipeline.step1_upload.meta.importError}</div>
+                    )}
+
+                    {/* Input + button */}
+                    {!importing && !property?.pipeline?.step1_upload?.meta?.importing && (
+                      <div className="flex gap-3">
+                        <input
+                          type="url"
+                          value={dropboxLink}
+                          onChange={e => setDropboxLink(e.target.value)}
+                          placeholder="https://www.dropbox.com/sh/xxxxx"
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500"
+                        />
+                        <button
+                          onClick={handleDropboxImport}
+                          disabled={!dropboxLink.trim()}
+                          className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold px-5 py-3 rounded-xl text-sm transition-colors shrink-0"
+                        >
+                          Import
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
 
             {/* Upload result feedback */}

@@ -120,6 +120,62 @@ async function listFolder(folderPath) {
   }
 }
 
+// List image files in a shared folder link (e.g. https://www.dropbox.com/sh/xxxx)
+// Returns array of { name, path_lower, size } entries for image files only
+async function listSharedFolderImages(sharedLink) {
+  const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'tiff', 'tif']);
+  let entries = [];
+  let cursor = null;
+
+  try {
+    const firstRes = await axios.post(
+      `${API}/files/list_folder`,
+      { path: '', shared_link: { url: sharedLink }, recursive: false },
+      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
+    );
+    entries = firstRes.data.entries;
+    cursor = firstRes.data.has_more ? firstRes.data.cursor : null;
+  } catch (err) { dropboxError(err); }
+
+  // Paginate if needed
+  while (cursor) {
+    try {
+      const contRes = await axios.post(
+        `${API}/files/list_folder/continue`,
+        { cursor },
+        { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
+      );
+      entries = entries.concat(contRes.data.entries);
+      cursor = contRes.data.has_more ? contRes.data.cursor : null;
+    } catch (err) { dropboxError(err); }
+  }
+
+  // Filter to image files only
+  return entries.filter(e => {
+    if (e['.tag'] !== 'file') return false;
+    const ext = e.name.split('.').pop().toLowerCase();
+    return IMAGE_EXTS.has(ext);
+  });
+}
+
+// Download a specific file from a shared folder link
+// filePath: path within the shared folder, e.g. '/photo.jpg'
+async function downloadSharedFile(sharedLink, filePath) {
+  try {
+    const res = await axios({
+      method: 'post',
+      url: `${CONTENT_API}/sharing/get_shared_link_file`,
+      headers: {
+        Authorization: `Bearer ${await TOKEN()}`,
+        'Dropbox-API-Arg': JSON.stringify({ url: sharedLink, path: filePath }),
+      },
+      responseType: 'arraybuffer',
+      maxContentLength: Infinity,
+    });
+    return Buffer.from(res.data);
+  } catch (err) { dropboxError(err); }
+}
+
 // Create folder (silently ignore if already exists)
 async function createFolder(folderPath) {
   try {
@@ -246,4 +302,4 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
   }
 }
 
-module.exports = { uploadFile, uploadLargeFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken };
+module.exports = { uploadFile, uploadLargeFile, getTemporaryLink, getSharedLink, listFolder, createFolder, testToken, listSharedFolderImages, downloadSharedFile };
