@@ -224,11 +224,29 @@ function topByField(arr, ...fields) {
   }).slice(0, 3);
 }
 
+async function fetchFollowerTimeline(http, userId, blogId, network, range, subject) {
+  const params = {
+    userId, blogId,
+    from: toV2s(range.start), to: toV2e(range.end),
+    metric: 'followers', network,
+  };
+  if (subject) params.subject = subject;
+  const raw = await safeGet(http, '/v2/analytics/timelines', params);
+  const values = raw?.data?.[0]?.values || [];
+  if (!values.length) return { followers: null, followerGrowth: null, followerPct: null };
+  const last = values[values.length - 1].value;
+  const first = values[0].value;
+  const growth = values.length > 1 ? last - first : null;
+  const pct = growth !== null && first > 0 ? (growth / first) * 100 : null;
+  return { followers: last, followerGrowth: growth, followerPct: pct };
+}
+
 async function fetchInstagram(http, userId, blogId, range) {
   const b = { userId, blogId };
-  const [posts, reels] = await Promise.all([
+  const [posts, reels, follData] = await Promise.all([
     safeGet(http, '/stats/instagram/posts', { ...b, start: toV1(range.start), end: toV1(range.end) }),
     safeGet(http, '/stats/instagram/reels', { ...b, start: toV1(range.start), end: toV1(range.end) }),
+    fetchFollowerTimeline(http, userId, blogId, 'instagram', range, 'account'),
   ]);
   const all = [...extractPosts(posts), ...extractPosts(reels)];
   return {
@@ -240,7 +258,7 @@ async function fetchInstagram(http, userId, blogId, range) {
     avgEng:      all.length ? all.reduce((s,p) => s + (p.engagement||0), 0) / all.length : null,
     topEng:      topByField(all, 'engagement'),
     topViews:    topByField(all, 'videoViews', 'views', 'reach'),
-    followers:   null, followerGrowth: null, followerPct: null,
+    ...follData,
   };
 }
 
@@ -253,9 +271,10 @@ async function fetchTikTok(http, userId, blogId, range) {
     platform:   'tiktok',
     posts:      all,
     postsCount: all.length,
-    totalViews: all.reduce((s,p) => s + (p.views||p.videoViews||0), 0),
+    totalViews: all.reduce((s,p) => s + (p.viewCount||p.views||p.videoViews||0), 0),
+    totalLikes: all.reduce((s,p) => s + (p.likeCount||p.likes||0), 0),
     avgEng:     all.length ? all.reduce((s,p) => s + (p.engagement||0), 0) / all.length : null,
-    topViews:   topByField(all, 'views', 'videoViews'),
+    topViews:   topByField(all, 'viewCount', 'views', 'videoViews'),
     topEng:     topByField(all, 'engagement'),
     followers: null, followerGrowth: null, followerPct: null,
   };
@@ -279,11 +298,23 @@ async function fetchFacebook(http, userId, blogId, range) {
 
 async function fetchYouTube(http, userId, blogId, range) {
   const b = { userId, blogId };
-  const raw = await safeGet(http, '/v2/analytics/posts/youtube',
-    { ...b, from: toV2s(range.start), to: toV2e(range.end), postsType: 'publishedInRange' });
+  const [raw, subRaw, gainRaw] = await Promise.all([
+    safeGet(http, '/v2/analytics/posts/youtube',
+      { ...b, from: toV2s(range.start), to: toV2e(range.end), postsType: 'publishedInRange' }),
+    safeGet(http, '/v2/analytics/timelines',
+      { userId, blogId, from: toV2s(range.start), to: toV2e(range.end), metric: 'totalSubscribers', network: 'youtube' }),
+    safeGet(http, '/v2/analytics/timelines',
+      { userId, blogId, from: toV2s(range.start), to: toV2e(range.end), metric: 'subscribersGained', network: 'youtube' }),
+  ]);
   const all = extractPosts(raw);
   const totalWatchSec = all.reduce((s,p) =>
     s + (p.averageViewDuration||p.watchTime||0), 0);
+  const subVals = subRaw?.data?.[0]?.values || [];
+  const gainVals = gainRaw?.data?.[0]?.values || [];
+  const subscribers = subVals.length ? subVals[subVals.length - 1].value : null;
+  const subGrowth   = gainVals.length ? gainVals.reduce((s,v) => s + (v.value||0), 0) : null;
+  const subPct      = subscribers && subGrowth !== null && subscribers > subGrowth
+    ? (subGrowth / (subscribers - subGrowth)) * 100 : null;
   return {
     platform:    'youtube',
     posts:       all,
@@ -291,7 +322,7 @@ async function fetchYouTube(http, userId, blogId, range) {
     totalViews:  all.reduce((s,p) => s + (p.views||0), 0),
     watchHours:  Math.round(totalWatchSec / 3600),
     topViews:    topByField(all, 'views'),
-    subscribers: null, subGrowth: null, subPct: null,
+    subscribers, subGrowth, subPct,
   };
 }
 
@@ -448,7 +479,7 @@ Responde en español, máximo 650 tokens, con este formato exacto:
 
 // Post caption
 function cap(post) {
-  const raw = post?.content || post?.text || post?.title || post?.description || '(sin título)';
+  const raw = post?.videoDescription || post?.content || post?.text || post?.title || post?.description || '(sin título)';
   return raw.replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,60) + (raw.length > 60 ? '…' : '');
 }
 
@@ -461,16 +492,17 @@ function platformCard(pf, brand) {
   const isTT = pf.platform === 'tiktok';
 
   // Main metrics inside the "card box"
+  const hasFollowers = pf.followers !== null && pf.followers !== undefined;
   const mainMetric1 = isYT
     ? `<td style="width:50%;padding:10px 12px;border-right:1px solid #1A1A1A;">
         <div style="color:#888;font-size:9px;font-family:Arial;letter-spacing:1px;">SUSCRIPTORES</div>
-        <div style="color:#FFF;font-size:20px;font-weight:bold;font-family:Arial;">${fmtN(pf.subscribers||0)}</div>
-        <div style="color:#4CAF50;font-size:10px;font-family:Arial;">${fmtNP(pf.subGrowth)} esta semana</div>
+        <div style="color:#FFF;font-size:20px;font-weight:bold;font-family:Arial;">${pf.subscribers !== null && pf.subscribers !== undefined ? fmtN(pf.subscribers) : '—'}</div>
+        <div style="color:#4CAF50;font-size:10px;font-family:Arial;">${pf.subGrowth !== null ? fmtNP(pf.subGrowth)+' esta semana' : 'sin datos aún'}</div>
       </td>`
     : `<td style="width:50%;padding:10px 12px;border-right:1px solid #1A1A1A;">
         <div style="color:#888;font-size:9px;font-family:Arial;letter-spacing:1px;">SEGUIDORES</div>
-        <div style="color:#FFF;font-size:20px;font-weight:bold;font-family:Arial;">${fmtN(pf.followers||0)}</div>
-        <div style="color:#4CAF50;font-size:10px;font-family:Arial;">${fmtNP(pf.followerGrowth)} · ${fmtPct(pf.followerPct)}</div>
+        <div style="color:#FFF;font-size:20px;font-weight:bold;font-family:Arial;">${hasFollowers ? fmtN(pf.followers) : '—'}</div>
+        <div style="color:#4CAF50;font-size:10px;font-family:Arial;">${hasFollowers && pf.followerGrowth !== null ? fmtNP(pf.followerGrowth)+' · '+fmtPct(pf.followerPct) : 'sin datos de seguidores'}</div>
       </td>`;
 
   const mainMetric2 = isTT || isYT
