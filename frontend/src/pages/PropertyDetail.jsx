@@ -453,42 +453,131 @@ export default function PropertyDetail() {
           <div className="space-y-6">
 
             {/* In-progress state — shows immediately on click (expanding) OR after first poll (isExpanding) */}
-            {(isExpanding || expanding) && (
-              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-4">
-                    <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                    </svg>
-                    <div>
-                      <p className="text-blue-400 font-semibold">Expanding photos with Stability AI…</p>
-                      <p className="text-gray-400 text-sm mt-0.5">
-                        {expandMeta.progress || 0} of {expandMeta.total || photos.length} photos — this may take several minutes
-                      </p>
+            {(isExpanding || expanding) && (() => {
+              // Build per-photo status for the live grid
+              const expandedMap = {};
+              for (const ep of expandMeta.expandedPhotos || []) expandedMap[ep.id] = ep;
+              const errorMap = {};
+              for (const e of expandMeta.errors || []) errorMap[e.name] = e;
+              let foundCurrent = false;
+              const gridItems = photos.map(photo => {
+                const ep  = expandedMap[photo.id];
+                const err = errorMap[photo.name];
+                let status;
+                if (ep)                     status = 'done';
+                else if (err)               status = 'failed';
+                else if (!foundCurrent)   { status = 'expanding'; foundCurrent = true; }
+                else                        status = 'pending';
+                return {
+                  ...photo,
+                  status,
+                  displayThumb: ep?.thumbnailUrl || photo.thumbnailUrl,
+                  errorMsg: err?.error,
+                };
+              });
+
+              return (
+                <>
+                  <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 space-y-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                        </svg>
+                        <div>
+                          <p className="text-blue-400 font-semibold">Expanding photos with Stability AI…</p>
+                          <p className="text-gray-400 text-sm mt-0.5">
+                            {expandMeta.progress || 0} of {expandMeta.total || photos.length} photos — this may take several minutes
+                          </p>
+                        </div>
+                      </div>
+                      {/* Restart button — visible during in-progress for stuck/interrupted jobs */}
+                      {user?.role === 'admin' && (expandMeta.progress || 0) > 0 && (
+                        <button
+                          onClick={handleExpand}
+                          disabled={expanding}
+                          title="If the job is stuck or was interrupted, click to resume from where it left off"
+                          className="shrink-0 text-xs text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-400/50 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          ↺ Restart
+                        </button>
+                      )}
+                    </div>
+                    {/* Progress bar */}
+                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                        style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || photos.length)) * 100}%` }}
+                      />
                     </div>
                   </div>
-                  {/* Restart button — visible during in-progress for stuck/interrupted jobs */}
-                  {user?.role === 'admin' && (expandMeta.progress || 0) > 0 && (
-                    <button
-                      onClick={handleExpand}
-                      disabled={expanding}
-                      title="If the job is stuck or was interrupted, click to resume from where it left off"
-                      className="shrink-0 text-xs text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-400/50 px-3 py-1.5 rounded-lg transition-colors"
-                    >
-                      ↺ Restart
-                    </button>
-                  )}
-                </div>
-                {/* Progress bar — starts at 0%, updates every 4s via polling */}
-                <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                    style={{ width: `${((expandMeta.progress || 0) / (expandMeta.total || photos.length)) * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
+
+                  {/* Live photo grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {gridItems.map(item => (
+                      <div
+                        key={item.id}
+                        className={`bg-gray-800 rounded-xl overflow-hidden ring-1 ${
+                          item.status === 'done'      ? 'ring-green-500/40' :
+                          item.status === 'failed'    ? 'ring-red-500/40'   :
+                          item.status === 'expanding' ? 'ring-blue-500/40'  :
+                          'ring-gray-700'
+                        }`}
+                      >
+                        {/* Thumbnail — 9:16 */}
+                        <div className="aspect-[9/16] relative bg-gray-900 overflow-hidden">
+                          {item.displayThumb ? (
+                            <img
+                              src={item.displayThumb}
+                              alt={item.name}
+                              className={`w-full h-full object-cover transition-opacity ${item.status === 'pending' ? 'opacity-25' : 'opacity-100'}`}
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-700 text-xs">Sin preview</div>
+                          )}
+
+                          {/* Expanding overlay */}
+                          {item.status === 'expanding' && (
+                            <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center gap-2">
+                              <svg className="w-8 h-8 text-blue-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                              </svg>
+                              <p className="text-blue-300 text-[10px] font-medium">Expandiendo…</p>
+                            </div>
+                          )}
+
+                          {/* Status badge — top-right */}
+                          <div className="absolute top-1.5 right-1.5">
+                            {item.status === 'done' && (
+                              <div className="w-6 h-6 rounded-full bg-green-500 shadow flex items-center justify-center">
+                                <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+                                </svg>
+                              </div>
+                            )}
+                            {item.status === 'failed' && (
+                              <div className="w-6 h-6 rounded-full bg-red-500 shadow flex items-center justify-center" title={item.errorMsg}>
+                                <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Filename */}
+                        <div className="px-2 py-1.5">
+                          <p className="text-gray-400 text-[10px] truncate leading-tight">{item.name}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
 
             {/* Partial errors / credits exhausted */}
             {!isExpanding && !expanding && expandMeta.errors?.length > 0 && (
