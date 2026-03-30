@@ -29,7 +29,6 @@ export default function PropertyDetail() {
   const [dropboxLink, setDropboxLink] = useState('');
   const [importing, setImporting] = useState(false);
 
-  const pollRef = useRef(null);
 
   // Load property
   useEffect(() => {
@@ -39,7 +38,9 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step1 importing or step2/3/7/8 are in_progress
+  // Poll while step1 importing or step2/3/7/8 are in_progress.
+  // Interval: 2s during Dropbox import, 8s for step7/8, 4s otherwise.
+  // Effect re-runs whenever interval changes so the timer is always correct.
   useEffect(() => {
     const step1Importing = property?.pipeline?.step1_upload?.meta?.importing === true;
     const step2Status = property?.pipeline?.step2_stability?.status;
@@ -52,45 +53,35 @@ export default function PropertyDetail() {
                      || step7Status === 'in_progress'
                      || step8Status === 'in_progress';
 
-    // step7/8 take longer — poll every 8s to reduce noise
-    const interval = (step7Status === 'in_progress' || step8Status === 'in_progress') ? 8000 : 4000;
+    const interval = step1Importing ? 2000
+                   : (step7Status === 'in_progress' || step8Status === 'in_progress') ? 8000
+                   : 4000;
 
-    if (shouldPoll) {
-      if (!pollRef.current) {
-        pollRef.current = setInterval(async () => {
-          try {
-            const { data } = await client.get(`/properties/${id}`);
-            setProperty(data.property);
-            const s1Importing = data.property.pipeline.step1_upload?.meta?.importing === true;
-            const s2 = data.property.pipeline.step2_stability?.status;
-            const s3 = data.property.pipeline.step3_claude?.status;
-            const s7 = data.property.pipeline.step7_higgsfield?.status;
-            const s8 = data.property.pipeline.step8_render?.status;
-            if (!s1Importing && s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
-              clearInterval(pollRef.current);
-              pollRef.current = null;
-              setImporting(false);
-              setExpanding(false);
-              setAnalyzing(false);
-              if (s3 === 'done') setActiveTab('analysis');
-              if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
-              if (s8 === 'done' || s8 === 'failed') setActiveTab('render');
-            }
-          } catch (_) {}
-        }, interval);
-      }
-    } else {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    }
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
+    if (!shouldPoll) return;
+
+    // Always create a fresh interval so the correct delay is used
+    const timer = setInterval(async () => {
+      try {
+        const { data } = await client.get(`/properties/${id}`);
+        setProperty(data.property);
+        const s1Importing = data.property.pipeline.step1_upload?.meta?.importing === true;
+        const s2 = data.property.pipeline.step2_stability?.status;
+        const s3 = data.property.pipeline.step3_claude?.status;
+        const s7 = data.property.pipeline.step7_higgsfield?.status;
+        const s8 = data.property.pipeline.step8_render?.status;
+        if (!s1Importing && s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
+          clearInterval(timer);
+          setImporting(false);
+          setExpanding(false);
+          setAnalyzing(false);
+          if (s3 === 'done') setActiveTab('analysis');
+          if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
+          if (s8 === 'done' || s8 === 'failed') setActiveTab('render');
+        }
+      } catch (_) {}
+    }, interval);
+
+    return () => clearInterval(timer);
   }, [
     property?.pipeline?.step1_upload?.meta?.importing,
     property?.pipeline?.step2_stability?.status,
@@ -320,10 +311,8 @@ export default function PropertyDetail() {
                   <div className="space-y-3">
                     {/* Importing progress */}
                     {(importing || property?.pipeline?.step1_upload?.meta?.importing) && (() => {
-                      const done = property?.pipeline?.step1_upload?.meta?.importDone ?? 0;
-                      const total = property?.pipeline?.step1_upload?.meta?.importTotal ?? 0;
-                      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-                      const label = property?.pipeline?.step1_upload?.meta?.importProgress || 'Connecting to Dropbox…';
+                      const pct = property?.pipeline?.step1_upload?.meta?.progress ?? 0;
+                      const label = property?.pipeline?.step1_upload?.meta?.statusMessage || 'Connecting to Dropbox…';
                       return (
                         <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-5 space-y-3">
                           <div className="flex items-center gap-3">
@@ -335,36 +324,30 @@ export default function PropertyDetail() {
                               <p className="text-blue-400 font-semibold">Importing from Dropbox…</p>
                               <p className="text-gray-400 text-sm mt-0.5 truncate">{label}</p>
                             </div>
-                            {total > 0 && (
-                              <span className="text-blue-300 font-mono text-sm shrink-0">{pct}%</span>
-                            )}
+                            <span className="text-blue-300 font-mono text-sm shrink-0">{pct}%</span>
                           </div>
-                          {total > 0 && (
-                            <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-                              <div
-                                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                          )}
+                          <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                            <div
+                              className="bg-blue-500 h-2.5 rounded-full transition-all duration-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
                         </div>
                       );
                     })()}
 
                     {/* Import summary */}
                     {!importing && !property?.pipeline?.step1_upload?.meta?.importing && property?.pipeline?.step1_upload?.meta?.importSummary && (() => {
-                      const { imported, failed } = property.pipeline.step1_upload.meta.importSummary;
-                      const total = property.pipeline.step1_upload.meta.importTotal || imported;
+                      const { imported, total, failed } = property.pipeline.step1_upload.meta.importSummary;
+                      const label = property.pipeline.step1_upload.meta.statusMessage || `${imported} of ${total} imported — 100%`;
                       return (
-                        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <p className="text-green-400 font-medium">{imported} of {total} imported — 100%</p>
-                          </div>
-                          <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-                            <div className="bg-green-500 h-2 rounded-full w-full" />
+                        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 space-y-2">
+                          <p className="text-green-400 font-medium">{label}</p>
+                          <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                            <div className="bg-green-500 h-2.5 rounded-full w-full" />
                           </div>
                           {failed > 0 && (
-                            <p className="text-yellow-400 text-sm pt-1">{failed} skipped (low resolution or error)</p>
+                            <p className="text-yellow-400 text-sm">{failed} skipped (low resolution or error)</p>
                           )}
                         </div>
                       );
