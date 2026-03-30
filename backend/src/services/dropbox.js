@@ -4,20 +4,24 @@ const CONTENT_API = 'https://content.dropboxapi.com/2';
 const API         = 'https://api.dropboxapi.com/2';
 
 // ── Token management ─────────────────────────────────────────────────────────
-// Supports two modes:
-//   1. DROPBOX_TOKEN (legacy static token — short-lived, kept for fallback)
-//   2. DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET
-//      → auto-refreshes before every request; token cached in memory for 3h.
+// Uses DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET.
+// Falls back to static DROPBOX_TOKEN if refresh vars are not set.
+// Token cached in memory for 3h; invalidated on 401 and immediately refreshed.
 let _cachedToken   = null;
 let _cacheExpiry   = 0;   // unix ms
 
+function _invalidateToken() {
+  _cachedToken = null;
+  _cacheExpiry = 0;
+}
+
 async function TOKEN() {
-  // Mode 1: static token (no refresh credentials set)
+  // Fallback: static token (no refresh credentials configured)
   if (!process.env.DROPBOX_REFRESH_TOKEN) {
     return process.env.DROPBOX_TOKEN;
   }
 
-  // Mode 2: refresh token — use cached value if still valid (3-hour window)
+  // Use cached token if still valid
   const now = Date.now();
   if (_cachedToken && now < _cacheExpiry) return _cachedToken;
 
@@ -33,12 +37,12 @@ async function TOKEN() {
   );
 
   _cachedToken = res.data.access_token;
-  _cacheExpiry = now + 3 * 60 * 60 * 1000; // cache for 3 hours
+  _cacheExpiry = Date.now() + 3 * 60 * 60 * 1000; // 3 hours
   console.log('[dropbox] access token refreshed');
   return _cachedToken;
 }
 
-// Helper: extract readable Dropbox error
+// Helper: extract readable Dropbox error, throwing with status attached
 function dropboxError(err) {
   const status = err.response?.status;
   const data = err.response?.data;
@@ -49,13 +53,32 @@ function dropboxError(err) {
   throw enhanced;
 }
 
+// Wrapper: run an axios call; on 401, invalidate token cache and retry once.
+// callFn receives a fresh token and must return an axios promise.
+async function withRetry401(callFn) {
+  try {
+    return await callFn(await TOKEN());
+  } catch (err) {
+    if (err.response?.status === 401 && process.env.DROPBOX_REFRESH_TOKEN) {
+      console.warn('[dropbox] 401 received — invalidating token cache and retrying…');
+      _invalidateToken();
+      try {
+        return await callFn(await TOKEN());
+      } catch (retryErr) {
+        dropboxError(retryErr);
+      }
+    }
+    dropboxError(err);
+  }
+}
+
 // Upload a file buffer to Dropbox
 // Returns: { path_display, id, size }
 async function uploadFile(buffer, dropboxPath) {
-  try {
-    const res = await axios.post(`${CONTENT_API}/files/upload`, buffer, {
+  return withRetry401(token =>
+    axios.post(`${CONTENT_API}/files/upload`, buffer, {
       headers: {
-        Authorization: `Bearer ${await TOKEN()}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/octet-stream',
         'Dropbox-API-Arg': JSON.stringify({
           path: dropboxPath,
@@ -67,57 +90,49 @@ async function uploadFile(buffer, dropboxPath) {
       },
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
-    });
-    return res.data;
-  } catch (err) {
-    dropboxError(err);
-  }
+    }).then(r => r.data)
+  );
 }
 
 // Get a temporary (4-hour) direct download link for a file
 async function getTemporaryLink(dropboxPath) {
-  try {
-    const res = await axios.post(
+  return withRetry401(token =>
+    axios.post(
       `${API}/files/get_temporary_link`,
       { path: dropboxPath },
-      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
-    );
-    return res.data.link;
-  } catch (err) {
-    dropboxError(err);
-  }
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    ).then(r => r.data.link)
+  );
 }
 
 // Create a shared link (permanent preview URL)
 async function getSharedLink(dropboxPath) {
   try {
-    const res = await axios.post(
-      `${API}/sharing/create_shared_link_with_settings`,
-      { path: dropboxPath, settings: { requested_visibility: 'public' } },
-      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
+    return await withRetry401(token =>
+      axios.post(
+        `${API}/sharing/create_shared_link_with_settings`,
+        { path: dropboxPath, settings: { requested_visibility: 'public' } },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      ).then(r => r.data.url.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', ''))
     );
-    return res.data.url.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '');
   } catch (err) {
-    if (err.response?.data?.error?.['.tag'] === 'shared_link_already_exists') {
-      const existing = err.response.data.error.shared_link_already_exists?.metadata?.url;
+    if (err.dropboxData?.error?.['.tag'] === 'shared_link_already_exists') {
+      const existing = err.dropboxData.error.shared_link_already_exists?.metadata?.url;
       if (existing) return existing.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '');
     }
-    dropboxError(err);
+    throw err;
   }
 }
 
 // List files in a folder
 async function listFolder(folderPath) {
-  try {
-    const res = await axios.post(
+  return withRetry401(token =>
+    axios.post(
       `${API}/files/list_folder`,
       { path: folderPath, recursive: false },
-      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
-    );
-    return res.data.entries;
-  } catch (err) {
-    dropboxError(err);
-  }
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    ).then(r => r.data.entries)
+  );
 }
 
 // List image files in a shared folder link (e.g. https://www.dropbox.com/sh/xxxx)
@@ -127,27 +142,27 @@ async function listSharedFolderImages(sharedLink) {
   let entries = [];
   let cursor = null;
 
-  try {
-    const firstRes = await axios.post(
+  const firstData = await withRetry401(token =>
+    axios.post(
       `${API}/files/list_folder`,
       { path: '', shared_link: { url: sharedLink }, recursive: false },
-      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
-    );
-    entries = firstRes.data.entries;
-    cursor = firstRes.data.has_more ? firstRes.data.cursor : null;
-  } catch (err) { dropboxError(err); }
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    ).then(r => r.data)
+  );
+  entries = firstData.entries;
+  cursor = firstData.has_more ? firstData.cursor : null;
 
   // Paginate if needed
   while (cursor) {
-    try {
-      const contRes = await axios.post(
+    const contData = await withRetry401(token =>
+      axios.post(
         `${API}/files/list_folder/continue`,
         { cursor },
-        { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
-      );
-      entries = entries.concat(contRes.data.entries);
-      cursor = contRes.data.has_more ? contRes.data.cursor : null;
-    } catch (err) { dropboxError(err); }
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      ).then(r => r.data)
+    );
+    entries = entries.concat(contData.entries);
+    cursor = contData.has_more ? contData.cursor : null;
   }
 
   // Filter to image files only
@@ -161,51 +176,50 @@ async function listSharedFolderImages(sharedLink) {
 // Download a specific file from a shared folder link
 // filePath: path within the shared folder, e.g. '/photo.jpg'
 async function downloadSharedFile(sharedLink, filePath) {
-  try {
-    const res = await axios({
+  return withRetry401(token =>
+    axios({
       method: 'post',
       url: `${CONTENT_API}/sharing/get_shared_link_file`,
       headers: {
-        Authorization: `Bearer ${await TOKEN()}`,
+        Authorization: `Bearer ${token}`,
         'Dropbox-API-Arg': JSON.stringify({ url: sharedLink, path: filePath }),
       },
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
-    });
-    return Buffer.from(res.data);
-  } catch (err) { dropboxError(err); }
+    }).then(r => Buffer.from(r.data))
+  );
 }
 
 // Create folder (silently ignore if already exists)
 async function createFolder(folderPath) {
   try {
-    await axios.post(
-      `${API}/files/create_folder_v2`,
-      { path: folderPath, autorename: false },
-      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
+    await withRetry401(token =>
+      axios.post(
+        `${API}/files/create_folder_v2`,
+        { path: folderPath, autorename: false },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      )
     );
   } catch (err) {
-    const tag = err.response?.data?.error?.['.tag'];
-    const conflictTag = err.response?.data?.error?.path?.['.tag'];
+    const data = err.dropboxData || err.response?.data;
+    const tag = data?.error?.['.tag'];
+    const conflictTag = data?.error?.path?.['.tag'];
     if (tag === 'path' && conflictTag === 'conflict') return; // already exists
     if (err.message?.includes('conflict')) return;
-    // ignore folder already exists errors silently
-    console.warn(`[dropbox] createFolder ${folderPath}:`, err.response?.data || err.message);
+    console.warn(`[dropbox] createFolder ${folderPath}:`, data || err.message);
   }
 }
 
 // Test token validity using check/user (minimal scope required)
 async function testToken() {
-  const res = await axios({
-    method: 'post',
-    url: `${API}/check/user`,
-    data: { query: 'ping' },
-    headers: {
-      Authorization: `Bearer ${await TOKEN()}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  return res.data; // returns { result: 'ping' } if token is valid
+  return withRetry401(token =>
+    axios({
+      method: 'post',
+      url: `${API}/check/user`,
+      data: { query: 'ping' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    }).then(r => r.data)
+  );
 }
 
 // Upload a large file (>100 MB) using Dropbox upload sessions (chunked).
@@ -215,32 +229,30 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
   const total = buffer.length;
 
   // 1 — Start session
-  let sessionId;
-  try {
-    const startRes = await axios.post(
+  const startData = await withRetry401(token =>
+    axios.post(
       `${CONTENT_API}/files/upload_session/start`,
       buffer.slice(0, Math.min(CHUNK, total)),
       {
         headers: {
-          Authorization: `Bearer ${await TOKEN()}`,
+          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/octet-stream',
           'Dropbox-API-Arg': JSON.stringify({ close: total <= CHUNK }),
         },
         maxBodyLength: Infinity,
       }
-    );
-    sessionId = startRes.data.session_id;
-  } catch (err) { dropboxError(err); }
+    ).then(r => r.data)
+  );
+  const sessionId = startData.session_id;
 
   if (total <= CHUNK) {
-    // File fits in one chunk — commit immediately
-    try {
-      const res = await axios.post(
+    return withRetry401(token =>
+      axios.post(
         `${CONTENT_API}/files/upload_session/finish`,
         Buffer.alloc(0),
         {
           headers: {
-            Authorization: `Bearer ${await TOKEN()}`,
+            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/octet-stream',
             'Dropbox-API-Arg': JSON.stringify({
               cursor: { session_id: sessionId, offset: Math.min(CHUNK, total) },
@@ -249,43 +261,42 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
           },
           maxBodyLength: Infinity,
         }
-      );
-      return res.data;
-    } catch (err) { dropboxError(err); }
+      ).then(r => r.data)
+    );
   }
 
   // 2 — Append remaining chunks
   let offset = CHUNK;
   while (offset < total) {
-    const end      = Math.min(offset + CHUNK, total);
-    const isLast   = end >= total;
-    const chunk    = buffer.slice(offset, end);
+    const end    = Math.min(offset + CHUNK, total);
+    const isLast = end >= total;
+    const chunk  = buffer.slice(offset, end);
 
     if (!isLast) {
-      try {
-        await axios.post(
+      await withRetry401(token =>
+        axios.post(
           `${CONTENT_API}/files/upload_session/append_v2`,
           chunk,
           {
             headers: {
-              Authorization: `Bearer ${await TOKEN()}`,
+              Authorization: `Bearer ${token}`,
               'Content-Type': 'application/octet-stream',
               'Dropbox-API-Arg': JSON.stringify({ cursor: { session_id: sessionId, offset }, close: false }),
             },
             maxBodyLength: Infinity,
           }
-        );
-      } catch (err) { dropboxError(err); }
+        )
+      );
       offset = end;
     } else {
       // 3 — Finish session
-      try {
-        const res = await axios.post(
+      return withRetry401(token =>
+        axios.post(
           `${CONTENT_API}/files/upload_session/finish`,
           chunk,
           {
             headers: {
-              Authorization: `Bearer ${await TOKEN()}`,
+              Authorization: `Bearer ${token}`,
               'Content-Type': 'application/octet-stream',
               'Dropbox-API-Arg': JSON.stringify({
                 cursor: { session_id: sessionId, offset },
@@ -294,10 +305,8 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
             },
             maxBodyLength: Infinity,
           }
-        );
-        return res.data;
-      } catch (err) { dropboxError(err); }
-      break;
+        ).then(r => r.data)
+      );
     }
   }
 }
