@@ -125,6 +125,7 @@ function ClipCard({ clip, thumb }) {
 // ── Main component ────────────────────────────────────────────────────────────
 export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPhotos, step7, onStartGeneration, onRefresh, onContinue }) {
   const [starting, setStarting] = useState(false);
+  const [pausing,  setPausing]  = useState(false);
 
   // Build thumbMap
   const thumbMap = {};
@@ -135,6 +136,7 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
   const errors        = meta.errors || [];
   const isRunning     = step7?.status === 'in_progress';
   const isDone        = step7?.status === 'done';
+  const isPaused      = step7?.status === 'paused';
   const total         = meta.total  || (orderedPhotos || []).length;
   const doneCount     = clips.filter(c => c.status === 'done').length;
   const generatingCount = clips.filter(c => c.status === 'generating').length;
@@ -158,6 +160,29 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
       onStartGeneration?.();
     } catch (err) {
       alert(err.response?.data?.error || 'Error al iniciar la generación en Higgsfield');
+      setStarting(false);
+    }
+  }
+
+  async function handlePause() {
+    setPausing(true);
+    try {
+      await client.post(`/properties/${propertyId}/photos/higgsfield/pause`);
+      onRefresh?.();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Error al pausar');
+    } finally {
+      setPausing(false);
+    }
+  }
+
+  async function handleResume() {
+    setStarting(true);
+    try {
+      await client.post(`/properties/${propertyId}/photos/higgsfield`);
+      onStartGeneration?.();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Error al reanudar');
       setStarting(false);
     }
   }
@@ -188,18 +213,36 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
             )}
           </h2>
           <p className="text-gray-500 text-sm mt-0.5">
-            Kling v2.1 Pro · 5s · 9:16 1080p · una por una para respetar rate limits
+            Kling 3.0 Pro · 5s · 9:16 1080p · una por una para respetar rate limits
           </p>
         </div>
 
         <div className="flex gap-2">
-          {!isRunning && !isDone && (
+          {!isRunning && !isDone && !isPaused && (
             <button
               onClick={handleStart}
               disabled={starting}
               className="flex items-center gap-2 px-5 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
             >
               {starting ? <><SpinnerIcon /> Iniciando…</> : '→ Generar en Higgsfield'}
+            </button>
+          )}
+          {isRunning && (
+            <button
+              onClick={handlePause}
+              disabled={pausing}
+              className="flex items-center gap-2 px-4 py-2.5 bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              {pausing ? <><SpinnerIcon /> Pausando…</> : '⏸ Pausar'}
+            </button>
+          )}
+          {isPaused && (
+            <button
+              onClick={handleResume}
+              disabled={starting}
+              className="flex items-center gap-2 px-5 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              {starting ? <><SpinnerIcon /> Reanudando…</> : '▶ Reanudar'}
             </button>
           )}
           {(isDone || step7?.status === 'failed') && errors.length > 0 && (
@@ -214,13 +257,13 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
         </div>
       </div>
 
-      {/* ── Progress bar (while running) ────────────────── */}
-      {(isRunning || isDone) && (
+      {/* ── Progress bar (while running / paused / done) ── */}
+      {(isRunning || isPaused || isDone) && (
         <div className="space-y-2">
           <div className="flex items-center gap-3">
             <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-green-500 rounded-full transition-all duration-1000"
+                className={`h-full rounded-full transition-all duration-1000 ${isPaused ? 'bg-yellow-500' : 'bg-green-500'}`}
                 style={{ width: `${total > 0 ? (doneCount / total) * 100 : 0}%` }}
               />
             </div>
@@ -237,6 +280,11 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
               </span>
             </div>
           )}
+          {isPaused && (
+            <p className="text-yellow-400 text-sm">
+              ⏸ Pausado — {doneCount} completados, {total - doneCount} pendientes. Haz clic en "Reanudar" para continuar.
+            </p>
+          )}
           {isDone && errors.length === 0 && (
             <p className="text-green-400 text-sm">✓ Todos los clips generados</p>
           )}
@@ -249,7 +297,7 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
       )}
 
       {/* ── Idle state ──────────────────────────────────── */}
-      {!isRunning && !isDone && step7?.status !== 'failed' && (
+      {!isRunning && !isDone && !isPaused && step7?.status !== 'failed' && (
         <div className="text-center py-14 bg-gray-900 rounded-2xl">
           <div className="w-16 h-16 bg-purple-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
@@ -270,8 +318,8 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
         </div>
       )}
 
-      {/* ── Clip grid (shown while running AND when done) ─ */}
-      {(isRunning || isDone || step7?.status === 'failed') && displayItems.length > 0 && (
+      {/* ── Clip grid (shown while running, paused, and when done) ─ */}
+      {(isRunning || isPaused || isDone || step7?.status === 'failed') && displayItems.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
           {displayItems.map(item => (
             <ClipCard
