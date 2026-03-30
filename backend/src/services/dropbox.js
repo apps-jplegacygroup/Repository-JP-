@@ -191,19 +191,24 @@ async function listSharedFolderImages(sharedLink) {
   });
 }
 
-// Download a specific file from a shared folder link
-// filePath: path within the shared folder, e.g. '/photo.jpg'
+// Download a specific file from a shared folder link.
+// Dropbox requires Content-Type: text/plain and an empty body;
+// the args go in the Dropbox-API-Arg header as a JSON string.
+// filePath: filename with leading slash, e.g. '/photo.jpg'
 async function downloadSharedFile(sharedLink, filePath) {
   return withRetry401(token =>
     axios({
       method: 'post',
       url: `${CONTENT_API}/sharing/get_shared_link_file`,
+      data: '',  // required empty body
       headers: {
         Authorization: `Bearer ${token}`,
+        'Content-Type': 'text/plain',
         'Dropbox-API-Arg': JSON.stringify({ url: sharedLink, path: filePath }),
       },
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
+      maxBodyLength: Infinity,
     }).then(r => Buffer.from(r.data))
   );
 }

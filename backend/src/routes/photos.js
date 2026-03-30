@@ -202,19 +202,8 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
         const batch = imageEntries.slice(i, i + BATCH_SIZE);
 
         const results = await Promise.allSettled(batch.map(async (entry) => {
-          console.log(`[import-dropbox] downloading: ${entry.name} (path_lower=${entry.path_lower})`);
-
-          // Try shared-link download first; fall back to direct path download
-          let buffer;
-          try {
-            buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
-          } catch (dlErr) {
-            console.warn(`[import-dropbox] shared-link download failed for ${entry.name}: ${dlErr.message} — trying direct path`);
-            // Fall back: get a temp link using the file's absolute Dropbox path
-            const tempLink = await dropbox.getTemporaryLink(entry.path_lower);
-            const imgRes = await require('axios').get(tempLink, { responseType: 'arraybuffer', timeout: 60000 });
-            buffer = Buffer.from(imgRes.data);
-          }
+          console.log(`[import-dropbox] downloading: ${entry.name}`);
+          const buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
 
           const meta = await sharp(buffer).metadata();
           const minDim = 1000;
