@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import JSZip from 'jszip';
 import client from '../api/client';
 
 function SpinnerIcon({ className = 'w-4 h-4' }) {
@@ -123,9 +124,11 @@ function ClipCard({ clip, thumb }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPhotos, step7, onStartGeneration, onRefresh, onContinue }) {
-  const [starting, setStarting] = useState(false);
-  const [pausing,  setPausing]  = useState(false);
+export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPhotos, step7, onStartGeneration, onRefresh }) {
+  const [starting,     setStarting]     = useState(false);
+  const [pausing,      setPausing]      = useState(false);
+  const [downloading,  setDownloading]  = useState(false);
+  const [downloadPct,  setDownloadPct]  = useState(0);
 
   // Build thumbMap
   const thumbMap = {};
@@ -161,6 +164,36 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
     } catch (err) {
       alert(err.response?.data?.error || 'Error al iniciar la generación en Higgsfield');
       setStarting(false);
+    }
+  }
+
+  async function handleDownloadAll() {
+    const doneClips = clips.filter(c => c.status === 'done' && c.dropboxUrl);
+    if (doneClips.length === 0) return;
+    setDownloading(true);
+    setDownloadPct(0);
+    try {
+      const zip = new JSZip();
+      for (let i = 0; i < doneClips.length; i++) {
+        const clip = doneClips[i];
+        const res  = await fetch(clip.dropboxUrl);
+        const buf  = await res.arrayBuffer();
+        const filename = `${String(i + 1).padStart(2, '0')}_${(clip.space || clip.name || clip.photoId).replace(/\s+/g, '_')}.mp4`;
+        zip.file(filename, buf);
+        setDownloadPct(Math.round(((i + 1) / doneClips.length) * 100));
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `clips_${propertyId.slice(0, 8)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Error al descargar los clips: ' + err.message);
+    } finally {
+      setDownloading(false);
+      setDownloadPct(0);
     }
   }
 
@@ -217,7 +250,20 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
           </p>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {doneCount > 0 && (
+            <button
+              onClick={handleDownloadAll}
+              disabled={downloading}
+              className="flex items-center gap-2 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              {downloading ? (
+                <><SpinnerIcon /> {downloadPct}%</>
+              ) : (
+                <>⬇ Descargar todos los clips ({doneCount})</>
+              )}
+            </button>
+          )}
           {!isRunning && !isDone && !isPaused && (
             <button
               onClick={handleStart}
@@ -356,14 +402,15 @@ export default function HiggsfieldClips({ propertyId, orderedPhotos, expandedPho
               {doneCount} clip{doneCount > 1 ? 's' : ''} generado{doneCount > 1 ? 's' : ''} ✓
             </p>
             <p className="text-gray-400 text-sm mt-0.5">
-              Clips guardados en Dropbox › 04_clips. Listo para el render final.
+              Clips guardados en Dropbox › 04_clips. Usa "Descargar todos los clips" para el ZIP.
             </p>
           </div>
           <button
-            onClick={onContinue}
-            className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl text-sm transition-colors"
+            onClick={handleDownloadAll}
+            disabled={downloading}
+            className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors shrink-0"
           >
-            → Render final
+            {downloading ? <><SpinnerIcon /> {downloadPct}%</> : '⬇ Descargar ZIP'}
           </button>
         </div>
       )}

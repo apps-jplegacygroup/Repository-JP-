@@ -269,16 +269,20 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                 )}
                 {/* Overlay badges */}
                 <div className="absolute top-2 left-2 right-2 flex items-start justify-between gap-1 pointer-events-none">
-                  <span className="bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded capitalize leading-tight">
-                    {photo.space?.replace(/_/g, ' ')}
-                  </span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                    photo.wow_factor >= 8 ? 'bg-amber-500/90 text-white'
-                    : photo.wow_factor >= 6 ? 'bg-blue-500/80 text-white'
-                    : 'bg-gray-700/80 text-gray-300'
-                  }`}>
-                    ★ {photo.wow_factor}
-                  </span>
+                  {photo.space && (
+                    <span className="bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded capitalize leading-tight">
+                      {photo.space.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  {photo.wow_factor != null && photo.wow_factor !== 5 && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                      photo.wow_factor >= 8 ? 'bg-amber-500/90 text-white'
+                      : photo.wow_factor >= 6 ? 'bg-blue-500/80 text-white'
+                      : 'bg-gray-700/80 text-gray-300'
+                    }`}>
+                      ★ {photo.wow_factor}
+                    </span>
+                  )}
                 </div>
                 {/* Re-expanding overlay */}
                 {d.reexpanding && (

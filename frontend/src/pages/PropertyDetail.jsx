@@ -5,12 +5,10 @@ import client from '../api/client';
 import PipelineStatus from '../components/PipelineStatus.jsx';
 import PhotoUploader from '../components/PhotoUploader.jsx';
 import PhotoGrid from '../components/PhotoGrid.jsx';
-import AnalysisResults from '../components/AnalysisResults.jsx';
 import QAReview from '../components/QAReview.jsx';
 import SequenceEditor from '../components/SequenceEditor.jsx';
 import KlingPrompts from '../components/KlingPrompts.jsx';
 import HiggsfieldClips from '../components/HiggsfieldClips.jsx';
-import RenderFinal from '../components/RenderFinal.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -21,7 +19,6 @@ export default function PropertyDetail() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [expanding, setExpanding] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [activeTab, setActiveTab] = useState('upload');
   const [orderedPhotos, setOrderedPhotos] = useState(null);
@@ -38,45 +35,32 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step1 importing or step2/3/7/8 are in_progress.
-  // Interval: 2s during Dropbox import, 8s for step7/8, 4s otherwise.
-  // Effect re-runs whenever interval changes so the timer is always correct.
+  // Poll while step1 importing, step2 expanding, or step7 running.
+  // Interval: 2s during Dropbox import, 8s for step7, 4s otherwise.
   useEffect(() => {
     const step1Importing = property?.pipeline?.step1_upload?.meta?.importing === true;
     const step2Status = property?.pipeline?.step2_stability?.status;
-    const step3Status = property?.pipeline?.step3_claude?.status;
     const step7Status = property?.pipeline?.step7_higgsfield?.status;
-    const step8Status = property?.pipeline?.step8_render?.status;
     const shouldPoll  = step1Importing
                      || step2Status === 'in_progress'
-                     || step3Status === 'in_progress'
-                     || step7Status === 'in_progress'
-                     || step8Status === 'in_progress';
+                     || step7Status === 'in_progress';
 
-    const interval = step1Importing ? 2000
-                   : (step7Status === 'in_progress' || step8Status === 'in_progress') ? 8000
-                   : 4000;
+    const interval = step1Importing ? 2000 : step7Status === 'in_progress' ? 8000 : 4000;
 
     if (!shouldPoll) return;
 
-    // Always create a fresh interval so the correct delay is used
     const timer = setInterval(async () => {
       try {
         const { data } = await client.get(`/properties/${id}`);
         setProperty(data.property);
         const s1Importing = data.property.pipeline.step1_upload?.meta?.importing === true;
         const s2 = data.property.pipeline.step2_stability?.status;
-        const s3 = data.property.pipeline.step3_claude?.status;
         const s7 = data.property.pipeline.step7_higgsfield?.status;
-        const s8 = data.property.pipeline.step8_render?.status;
-        if (!s1Importing && s2 !== 'in_progress' && s3 !== 'in_progress' && s7 !== 'in_progress' && s8 !== 'in_progress') {
+        if (!s1Importing && s2 !== 'in_progress' && s7 !== 'in_progress') {
           clearInterval(timer);
           setImporting(false);
           setExpanding(false);
-          setAnalyzing(false);
-          if (s3 === 'done') setActiveTab('analysis');
           if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
-          if (s8 === 'done' || s8 === 'failed') setActiveTab('render');
         }
       } catch (_) {}
     }, interval);
@@ -85,10 +69,8 @@ export default function PropertyDetail() {
   }, [
     property?.pipeline?.step1_upload?.meta?.importing,
     property?.pipeline?.step2_stability?.status,
-    property?.pipeline?.step3_claude?.status,
     property?.pipeline?.step7_higgsfield?.status,
-    property?.pipeline?.step8_render?.status,
-    expanding, analyzing,
+    expanding,
   ]);
 
   // Derived state
@@ -99,24 +81,21 @@ export default function PropertyDetail() {
   const hasExpand = step2.status === 'done' && (expandMeta.expandedPhotos?.length || 0) > 0;
   const expandFailed = step2.status === 'failed';
 
-  const step3 = property?.pipeline?.step3_claude || {};
-  const analysisData = step3.meta || {};
-  const isAnalyzing = step3.status === 'in_progress';
-  const analysisFailed = step3.status === 'failed';
-  const hasAnalysis = (analysisData.selectedPhotos?.length || 0) > 0;
-
   const step4 = property?.pipeline?.step4_qa || {};
-  const hasQA = step4.status === 'in_progress' || step4.status === 'done';
 
-  // Join selected photos with their expanded thumbnailUrls
-  const selectedWithThumbs = hasAnalysis
-    ? (analysisData.selectedPhotos || []).map(p => ({
-        ...p,
-        thumbnailUrl: (expandMeta.expandedPhotos || []).find(e => e.id === p.photoId)?.thumbnailUrl || null,
-      }))
-    : [];
+  // All expanded photos mapped to the shape QAReview expects (no analysis data needed)
+  const selectedWithThumbs = (expandMeta.expandedPhotos || []).map(ep => ({
+    photoId:             ep.id,
+    name:                ep.name,
+    space:               null,
+    description:         '',
+    wow_factor:          5,
+    firefly_prompt:      '',
+    include_in_selection: true,
+    thumbnailUrl:        ep.thumbnailUrl,
+  }));
 
-  // Tab labels
+  // Tab labels — 6 steps (Analysis and Render removed)
   const tabs = [
     { key: 'upload', label: `1 Upload (${photos.length})` },
     {
@@ -127,32 +106,20 @@ export default function PropertyDetail() {
         ? `2 Expanding… (${expandMeta.progress || 0}/${expandMeta.total || photos.length})`
         : '2 Expand 9:16',
     },
-    { key: 'analysis', label: hasAnalysis ? `3 Analysis (${analysisData.totalSelected})` : isAnalyzing ? '3 Analyzing…' : '3 Analysis' },
-    { key: 'qa', label: step4.status === 'done' ? `4 QA ✓` : hasQA ? `4 QA` : '4 QA' },
-    { key: 'sequence', label: property?.pipeline?.step5_sequence?.status === 'done' ? '5 Sequence ✓' : '5 Sequence' },
-    { key: 'kling',      label: property?.pipeline?.step6_kling?.status === 'done' ? '6 Kling ✓' : '6 Kling' },
+    { key: 'qa',       label: step4.status === 'done' ? '3 QA ✓' : '3 QA' },
+    { key: 'sequence', label: property?.pipeline?.step5_sequence?.status === 'done' ? '4 Sequence ✓' : '4 Sequence' },
+    { key: 'kling',    label: property?.pipeline?.step6_kling?.status === 'done' ? '5 Kling ✓' : '5 Kling' },
     {
       key: 'higgsfield',
       label: (() => {
         const s = property?.pipeline?.step7_higgsfield;
-        if (s?.status === 'done') return '7 Higgsfield ✓';
+        if (s?.status === 'done') return '6 Higgsfield ✓';
         if (s?.status === 'in_progress') {
           const m = s.meta || {};
-          return `7 Generando… (${m.progress || 0}/${m.total || '?'})`;
+          return `6 Generando… (${m.progress || 0}/${m.total || '?'})`;
         }
-        return '7 Higgsfield';
-      })(),
-    },
-    {
-      key: 'render',
-      label: (() => {
-        const s = property?.pipeline?.step8_render;
-        if (s?.status === 'done') return '8 Render ✓';
-        if (s?.status === 'in_progress') {
-          const m = s.meta || {};
-          return `8 Renderizando… ${m.renderPct ? Math.round(m.renderPct) + '%' : ''}`;
-        }
-        return '8 Render';
+        if (s?.status === 'paused') return '6 Higgsfield ⏸';
+        return '6 Higgsfield';
       })(),
     },
   ];
@@ -244,21 +211,6 @@ export default function PropertyDetail() {
       const { data } = await client.get(`/properties/${id}`);
       setProperty(data.property);
     } catch (_) {}
-  }
-
-  async function handleAnalyze() {
-    setAnalyzing(true);
-    setActiveTab('analysis');
-    try {
-      await client.post(`/properties/${id}/photos/analyze`);
-      // 202 accepted — immediately refresh so step3_claude.status = 'in_progress'
-      // which triggers the polling loop
-      const { data } = await client.get(`/properties/${id}`);
-      setProperty(data.property);
-    } catch (err) {
-      alert(err.response?.data?.error || 'Analysis failed');
-      setAnalyzing(false);
-    }
   }
 
   if (loading) return (
@@ -648,34 +600,18 @@ export default function PropertyDetail() {
                   ))}
                 </div>
 
-                {/* Analyze button — only appears after expand is done */}
+                {/* Next step: QA Review */}
                 {user?.role === 'admin' && (
                   <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5">
                     <div>
                       <p className="text-white font-medium">{expandMeta.expandedPhotos.length} expanded photos ready</p>
-                      <p className="text-gray-500 text-sm mt-0.5">Claude Vision will analyze the 9:16 photos and select the best 25–30</p>
+                      <p className="text-gray-500 text-sm mt-0.5">Approve or reject each photo in QA Review before building the sequence</p>
                     </div>
                     <button
-                      onClick={handleAnalyze}
-                      disabled={analyzing}
-                      className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
+                      onClick={() => setActiveTab('qa')}
+                      className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
                     >
-                      {analyzing ? (
-                        <>
-                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                          </svg>
-                          Analyzing… (2–3 min)
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 001.357 2.059l.648.325M14.25 3.104c.251.023.501.05.75.082M19.5 7l-.648 7.143a2.25 2.25 0 01-2.243 2.107h-7.217a2.25 2.25 0 01-2.243-2.107L5 7m14.5 0H5m7.25 10v3.75" />
-                          </svg>
-                          Analyze with Claude Vision
-                        </>
-                      )}
+                      → Go to QA Review
                     </button>
                   </div>
                 )}
@@ -715,60 +651,6 @@ export default function PropertyDetail() {
           </div>
         )}
 
-        {/* ── Tab 3: Analysis ───────────────────────────────── */}
-        {activeTab === 'analysis' && (
-          <div>
-            {isAnalyzing && (
-              <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 flex items-center gap-4">
-                <svg className="w-6 h-6 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                </svg>
-                <div>
-                  <p className="text-blue-400 font-semibold">Claude Vision is analyzing photos…</p>
-                  <p className="text-gray-400 text-sm mt-0.5">This takes 2–4 minutes. This page updates automatically.</p>
-                </div>
-              </div>
-            )}
-
-            {analysisFailed && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
-                Analysis failed: {analysisData.error || 'Unknown error'}. Check Railway logs and try again.
-              </div>
-            )}
-
-            {hasAnalysis && (
-              <>
-                <AnalysisResults
-                  selected={analysisData.selectedPhotos}
-                  all={analysisData.analysisResults}
-                />
-                {/* Continue to QA button */}
-                {user?.role === 'admin' && (
-                  <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5 mt-6">
-                    <div>
-                      <p className="text-white font-medium">{analysisData.totalSelected} fotos seleccionadas por Claude</p>
-                      <p className="text-gray-500 text-sm mt-0.5">Revisar y aprobar cada foto antes de continuar</p>
-                    </div>
-                    <button
-                      onClick={() => setActiveTab('qa')}
-                      className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white font-semibold px-6 py-3 rounded-xl text-sm transition-colors shrink-0"
-                    >
-                      → Ir a QA Review
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-
-            {!isAnalyzing && !analysisFailed && !hasAnalysis && (
-              <div className="text-center py-20 text-gray-500">
-                <p>No analysis yet.</p>
-                <p className="text-sm mt-1">Go to the Expand tab and click "Analyze with Claude Vision".</p>
-              </div>
-            )}
-          </div>
-        )}
         {/* ── Tab 5: Sequence ───────────────────────────────── */}
         {activeTab === 'sequence' && (() => {
           const sequencePhotos = step4?.meta?.sequencePhotos || step4?.meta?.approvedPhotos || [];
@@ -793,22 +675,7 @@ export default function PropertyDetail() {
           );
         })()}
 
-        {/* ── Tab 8: Render Final ───────────────────────────── */}
-        {activeTab === 'render' && (() => {
-          const step7      = property?.pipeline?.step7_higgsfield || {};
-          const step8      = property?.pipeline?.step8_render     || {};
-          const doneClips  = (step7.meta?.clips || []).filter(c => c.status === 'done');
-          return (
-            <RenderFinal
-              propertyId={id}
-              step8={step8}
-              doneClipCount={doneClips.length}
-              onRefresh={handleRefresh}
-            />
-          );
-        })()}
-
-        {/* ── Tab 7: Higgsfield Clips ───────────────────────── */}
+        {/* ── Tab 6: Higgsfield Clips ───────────────────────── */}
         {activeTab === 'higgsfield' && (() => {
           const step5    = property?.pipeline?.step5_sequence || {};
           const step7    = property?.pipeline?.step7_higgsfield || {};
@@ -825,7 +692,6 @@ export default function PropertyDetail() {
                 setActiveTab('higgsfield');
               }}
               onRefresh={handleRefresh}
-              onContinue={() => setActiveTab('render')}
             />
           );
         })()}
@@ -855,10 +721,10 @@ export default function PropertyDetail() {
           );
         })()}
 
-        {/* ── Tab 4: QA Review ──────────────────────────────── */}
+        {/* ── Tab 3: QA Review ──────────────────────────────── */}
         {activeTab === 'qa' && (
           <div>
-            {hasAnalysis ? (
+            {selectedWithThumbs.length > 0 ? (
               <QAReview
                 propertyId={id}
                 selected={selectedWithThumbs}
@@ -869,13 +735,12 @@ export default function PropertyDetail() {
               />
             ) : (
               <div className="text-center py-20 text-gray-500">
-                <p>No hay análisis aún.</p>
-                <p className="text-sm mt-1">Completa los pasos de Expand y Analysis primero.</p>
+                <p>No hay fotos expandidas aún.</p>
                 <button
-                  onClick={() => setActiveTab('analysis')}
+                  onClick={() => setActiveTab('expand')}
                   className="mt-4 text-amber-500 hover:text-amber-400 text-sm underline"
                 >
-                  Ir a Analysis →
+                  Ir a Expand →
                 </button>
               </div>
             )}

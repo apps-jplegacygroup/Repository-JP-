@@ -26,13 +26,11 @@ function writeAll(properties) {
 
 const PIPELINE_STEPS = [
   'step1_upload',
-  'step2_stability',  // Expand 4:3 → 9:16 (runs before Claude analysis)
-  'step3_claude',     // Claude Vision analysis of expanded photos
+  'step2_stability',  // Expand 4:3 → 9:16
   'step4_qa',
   'step5_sequence',
   'step6_kling',
   'step7_higgsfield',
-  'step8_render',
 ];
 
 function defaultPipeline() {
@@ -86,7 +84,7 @@ function update(id, fields) {
 
 function updatePipelineStep(id, step, { status, meta }) {
   if (!PIPELINE_STEPS.includes(step)) return { error: 'Invalid pipeline step' };
-  const validStatuses = ['pending', 'in_progress', 'done', 'failed'];
+  const validStatuses = ['pending', 'in_progress', 'done', 'failed', 'paused'];
   if (!validStatuses.includes(status)) return { error: 'Invalid status' };
 
   const properties = readAll();
