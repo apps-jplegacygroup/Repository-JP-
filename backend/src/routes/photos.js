@@ -299,11 +299,8 @@ router.delete('/:photoId', (req, res) => {
   res.json({ ok: true, remaining: filtered.length });
 });
 
-// POST /api/v1/properties/:id/photos/expand
-// Starts Stability AI outpaint (4:3 → 9:16) as a background job.
-// Returns 202 immediately; frontend polls GET /properties/:id for progress.
-// On retry: skips photos that already have an expandedPhoto entry (resume from where it left off).
-router.post('/expand', requireAdmin, async (req, res) => {
+// Shared handler for POST /expand and POST /expand/retry (both are resume-safe)
+async function handleExpand(req, res) {
   const propertyId = req.params.id;
   const property = Property.getById(propertyId);
   if (!property) return res.status(404).json({ error: 'Property not found' });
@@ -394,7 +391,7 @@ router.post('/expand', requireAdmin, async (req, res) => {
             for (let attempt = 1; attempt <= 2; attempt++) {
               try {
                 console.log(`[expand] attempt ${attempt}: ${photo.name}`);
-                const result = await withTimeout(processOnePhoto(photo), 90_000);
+                const result = await withTimeout(processOnePhoto(photo), 30_000);
                 console.log(`[expand] ✓ ${photo.name}`);
                 return result;
               } catch (err) {
@@ -462,93 +459,15 @@ router.post('/expand', requireAdmin, async (req, res) => {
       });
     });
   });
-});
+}
 
-// POST /api/v1/properties/:id/photos/analyze
-// Returns 202 immediately; Claude Vision runs as a background job.
-// Frontend polls GET /properties/:id — step3_claude.status changes to 'done' or 'failed'.
-router.post('/analyze', requireAdmin, async (req, res) => {
-  const propertyId = req.params.id;
-  const property = Property.getById(propertyId);
-  if (!property) return res.status(404).json({ error: 'Property not found' });
+// Both /expand and /expand/retry share the same resume-safe handler
+router.post('/expand',       requireAdmin, handleExpand);
+router.post('/expand/retry', requireAdmin, handleExpand);
 
-  // Prefer expanded 9:16 photos (step2_stability) over raw 4:3 (step1_upload)
-  const expandedData = property.pipeline.step2_stability?.meta;
-  const usingExpanded = (expandedData?.expandedPhotos?.length || 0) > 0;
-  const photos = usingExpanded
-    ? expandedData.expandedPhotos.map(ep => ({
-        id: ep.id,
-        name: ep.name,
-        dropboxPath: ep.expandedPath,
-        mediaType: 'image/jpeg',
-      }))
-    : (property.pipeline.step1_upload?.meta?.photos || []);
-
-  if (photos.length === 0) return res.status(400).json({ error: 'No photos uploaded yet' });
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set in environment' });
-  }
-
-  // Mark in_progress and return 202 immediately — avoids Railway 60s proxy timeout
-  Property.updatePipelineStep(propertyId, 'step1_upload', {
-    status: 'done',
-    meta: property.pipeline.step1_upload.meta,
-  });
-  Property.updatePipelineStep(propertyId, 'step3_claude', {
-    status: 'in_progress',
-    meta: { total: photos.length, usingExpanded },
-  });
-  res.status(202).json({ ok: true, total: photos.length, usingExpanded });
-
-  // ---- Background processing (after response sent) ----
-  ;(async () => {
-    const axios = require('axios');
-    console.log(`[analyze] Starting background analysis of ${photos.length} ${usingExpanded ? 'EXPANDED 9:16' : 'RAW 4:3'} photos`);
-
-    // Download + resize all photos in parallel (max 8 concurrent)
-    const DOWNLOAD_CONCURRENCY = 8;
-    const photoData = [];
-    for (let i = 0; i < photos.length; i += DOWNLOAD_CONCURRENCY) {
-      const batch = photos.slice(i, i + DOWNLOAD_CONCURRENCY);
-      const results = await Promise.all(
-        batch.map(async (photo) => {
-          const link = await dropbox.getTemporaryLink(photo.dropboxPath);
-          const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
-          // Resize to max 1200px (enough for Claude Vision, smaller = faster)
-          const resized = await sharp(Buffer.from(imgRes.data))
-            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
-            .jpeg({ quality: 80 })
-            .toBuffer();
-          const kb = Math.round(resized.byteLength / 1024);
-          console.log(`[analyze] Downloaded+resized ${photo.name}: ${kb}KB`);
-          return { id: photo.id, name: photo.name, base64: resized.toString('base64'), mediaType: 'image/jpeg' };
-        })
-      );
-      photoData.push(...results);
-    }
-
-    console.log(`[analyze] All ${photoData.length} photos ready. Calling Claude Vision…`);
-    const { all, selected } = await analyzeAllPhotos(photoData);
-    console.log(`[analyze] Done. Analyzed: ${all.length}, Selected: ${selected.length}`);
-
-    Property.updatePipelineStep(propertyId, 'step3_claude', {
-      status: 'done',
-      meta: {
-        analysisResults: all,
-        selectedPhotos: selected,
-        analyzedAt: new Date().toISOString(),
-        totalAnalyzed: all.length,
-        totalSelected: selected.length,
-      },
-    });
-  })().catch(err => {
-    console.error('[analyze] FAILED:', err.message, err.stack?.split('\n')[1]);
-    Property.updatePipelineStep(propertyId, 'step3_claude', {
-      status: 'failed',
-      meta: { error: err.message },
-    });
-  });
+// POST /api/v1/properties/:id/photos/analyze  (REMOVED — Step 3 deleted from pipeline)
+router.post('/analyze', requireAdmin, (_req, res) => {
+  res.status(410).json({ error: 'Step 3 Analysis removed. QA uses expanded photos directly.' });
 });
 
 // POST /api/v1/properties/:id/photos/generate-kling-prompt/:photoId
