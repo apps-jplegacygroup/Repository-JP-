@@ -66,17 +66,15 @@ export default function Dashboard() {
               {loading ? '…' : `${properties.length} propert${properties.length === 1 ? 'y' : 'ies'}`}
             </p>
           </div>
-          {user?.role === 'admin' && (
-            <button
-              onClick={() => setShowModal(true)}
-              className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              New Property
-            </button>
-          )}
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            New Property
+          </button>
         </div>
 
         {/* States */}
@@ -92,9 +90,7 @@ export default function Dashboard() {
               </svg>
             </div>
             <p className="text-gray-400 font-medium">No properties yet</p>
-            {user?.role === 'admin' && (
-              <p className="text-gray-600 text-sm mt-1">Click "New Property" to get started</p>
-            )}
+            <p className="text-gray-600 text-sm mt-1">Click "New Property" to get started</p>
           </div>
         )}
 
