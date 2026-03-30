@@ -319,32 +319,56 @@ export default function PropertyDetail() {
                 {uploadMode === 'dropbox' && (
                   <div className="space-y-3">
                     {/* Importing progress */}
-                    {(importing || property?.pipeline?.step1_upload?.meta?.importing) && (
-                      <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-5">
-                        <div className="flex items-center gap-3">
-                          <svg className="w-5 h-5 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                          </svg>
-                          <div>
-                            <p className="text-blue-400 font-semibold">Importing from Dropbox…</p>
-                            <p className="text-gray-400 text-sm mt-0.5">{property?.pipeline?.step1_upload?.meta?.importProgress || 'Processing…'}</p>
+                    {(importing || property?.pipeline?.step1_upload?.meta?.importing) && (() => {
+                      const done = property?.pipeline?.step1_upload?.meta?.importDone ?? 0;
+                      const total = property?.pipeline?.step1_upload?.meta?.importTotal ?? 0;
+                      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                      const label = property?.pipeline?.step1_upload?.meta?.importProgress || 'Connecting to Dropbox…';
+                      return (
+                        <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-5 space-y-3">
+                          <div className="flex items-center gap-3">
+                            <svg className="w-5 h-5 text-blue-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                            </svg>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-blue-400 font-semibold">Importing from Dropbox…</p>
+                              <p className="text-gray-400 text-sm mt-0.5 truncate">{label}</p>
+                            </div>
+                            {total > 0 && (
+                              <span className="text-blue-300 font-mono text-sm shrink-0">{pct}%</span>
+                            )}
                           </div>
+                          {total > 0 && (
+                            <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+                              <div
+                                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {/* Import summary */}
-                    {!importing && !property?.pipeline?.step1_upload?.meta?.importing && property?.pipeline?.step1_upload?.meta?.importSummary && (
-                      <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
-                        <p className="text-green-400 font-medium">
-                          {property.pipeline.step1_upload.meta.importSummary.imported} photos imported from Dropbox
-                        </p>
-                        {property.pipeline.step1_upload.meta.importSummary.failed > 0 && (
-                          <p className="text-yellow-400 text-sm mt-1">{property.pipeline.step1_upload.meta.importSummary.failed} skipped (low resolution or error)</p>
-                        )}
-                      </div>
-                    )}
+                    {!importing && !property?.pipeline?.step1_upload?.meta?.importing && property?.pipeline?.step1_upload?.meta?.importSummary && (() => {
+                      const { imported, failed } = property.pipeline.step1_upload.meta.importSummary;
+                      const total = property.pipeline.step1_upload.meta.importTotal || imported;
+                      return (
+                        <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <p className="text-green-400 font-medium">{imported} of {total} imported — 100%</p>
+                          </div>
+                          <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
+                            <div className="bg-green-500 h-2 rounded-full w-full" />
+                          </div>
+                          {failed > 0 && (
+                            <p className="text-yellow-400 text-sm pt-1">{failed} skipped (low resolution or error)</p>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Import error */}
                     {property?.pipeline?.step1_upload?.meta?.importError && (
