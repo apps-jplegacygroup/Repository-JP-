@@ -179,7 +179,9 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
 
       // 2 — List images in shared folder
       saveProgress(0, 'Listing images in Dropbox folder…');
+      console.log(`[import-dropbox] listing shared folder: ${sharedLink}`);
       const imageEntries = await dropbox.listSharedFolderImages(sharedLink);
+      console.log(`[import-dropbox] found ${imageEntries.length} image(s) in shared folder`);
 
       if (imageEntries.length === 0) {
         const current = Property.getById(propertyId);
@@ -200,17 +202,31 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
         const batch = imageEntries.slice(i, i + BATCH_SIZE);
 
         const results = await Promise.allSettled(batch.map(async (entry) => {
-          const buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
+          console.log(`[import-dropbox] downloading: ${entry.name} (path_lower=${entry.path_lower})`);
+
+          // Try shared-link download first; fall back to direct path download
+          let buffer;
+          try {
+            buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
+          } catch (dlErr) {
+            console.warn(`[import-dropbox] shared-link download failed for ${entry.name}: ${dlErr.message} — trying direct path`);
+            // Fall back: get a temp link using the file's absolute Dropbox path
+            const tempLink = await dropbox.getTemporaryLink(entry.path_lower);
+            const imgRes = await require('axios').get(tempLink, { responseType: 'arraybuffer', timeout: 60000 });
+            buffer = Buffer.from(imgRes.data);
+          }
+
           const meta = await sharp(buffer).metadata();
           const minDim = 1000;
           if (meta.width < minDim || meta.height < minDim) {
-            throw Object.assign(new Error(`Resolution too low: ${meta.width}x${meta.height} (min ${minDim}px)`), { name: entry.name, resolutionError: true });
+            throw new Error(`Resolution too low: ${meta.width}x${meta.height} (min ${minDim}px)`);
           }
           const photoId = uuidv4();
           const ext = entry.name.split('.').pop().toLowerCase() || 'jpg';
           const dropboxPath = `${paths.raw}/${photoId}.${ext}`;
           await dropbox.uploadFile(buffer, dropboxPath);
           const thumbnailUrl = await dropbox.getTemporaryLink(dropboxPath);
+          console.log(`[import-dropbox] ✓ ${entry.name}`);
           return {
             id: photoId,
             name: entry.name,
@@ -226,11 +242,13 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
 
         // Collect results and update progress after each batch
         results.forEach((result, idx) => {
+          const photoName = batch[idx].name;
           if (result.status === 'fulfilled') {
             uploaded.push(result.value);
           } else {
             const err = result.reason;
-            errors.push({ name: err.name || batch[idx].name, error: err.message });
+            console.error(`[import-dropbox] photo ${i + idx} failed (${photoName}):`, err.message || err);
+            errors.push({ name: photoName, error: err.message || String(err) });
           }
         });
 
