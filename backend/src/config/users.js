@@ -13,14 +13,14 @@ const USERS = [
     id: 'u2',
     email: 'karen@getvau.com',
     name: 'Karen',
-    role: 'user',           // sees only properties where assignedTo includes 'u2'
+    role: 'admin',
     passwordEnvKey: 'USER_KAREN_PASS',
   },
   {
     id: 'u3',
     email: 'marketing@jplegacygroup.com',
     name: 'Marketing',
-    role: 'user',
+    role: 'admin',
     passwordEnvKey: 'USER_MARKETING_PASS',
   },
 ];
