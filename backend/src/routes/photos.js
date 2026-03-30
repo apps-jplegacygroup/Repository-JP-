@@ -322,14 +322,23 @@ router.post('/expand', requireAdmin, async (req, res) => {
       total: rawPhotos.length,
     },
   });
+  console.log(`[expand] 202 sent for ${propertyId}. pending=${pending.length} alreadyDone=${alreadyExp.length} total=${rawPhotos.length}`);
   res.status(202).json({ ok: true, total: rawPhotos.length, pending: pending.length, alreadyDone: alreadyExp.length });
 
   // ---- Background processing (true fire-and-forget — runs on Railway
   //      independently of the HTTP connection; user can navigate away) ----
+  console.log(`[expand] scheduling setImmediate for ${propertyId}`);
   setImmediate(() => {
+    console.log(`[expand] background job started for property: ${propertyId}`);
     (async () => {
       const axios = require('axios');
-      const paths = buildPaths(property);
+      // Re-fetch property so buildPaths uses the latest address (not a stale snapshot)
+      const freshProp = Property.getById(propertyId) || property;
+      const paths = buildPaths(freshProp);
+      console.log(`[expand] Dropbox paths: raw=${paths.raw} expanded=${paths.expanded}`);
+      console.log(`[expand] STABILITY_API_KEY set: ${!!process.env.STABILITY_API_KEY}`);
+      console.log(`[expand] Processing ${pending.length} photos for property ${propertyId}`);
+
       const expandedPhotos = [...alreadyExp]; // start with already-done photos
       const errors = [];
       let creditsExhausted = false;
@@ -365,7 +374,7 @@ router.post('/expand', requireAdmin, async (req, res) => {
           continue;
         }
 
-        console.log(`[expand] Processing ${expandedPhotos.length + 1}/${rawPhotos.length}: ${photo.name}`);
+        console.log(`[expand] [${i + 1}/${pending.length}] Starting: ${photo.name} (id=${photo.id}) dropboxPath=${photo.dropboxPath}`);
 
         let result = null;
         let lastErr = null;
@@ -373,13 +382,16 @@ router.post('/expand', requireAdmin, async (req, res) => {
         // Try up to 2 attempts (original + 1 retry), each with a 90s outer timeout
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
+            console.log(`[expand] [${i + 1}/${pending.length}] attempt ${attempt}: calling processOnePhoto`);
             result = await withTimeout(processOnePhoto(photo), 90_000);
+            console.log(`[expand] [${i + 1}/${pending.length}] attempt ${attempt}: processOnePhoto returned OK`);
             break; // success
           } catch (err) {
             lastErr = err;
+            console.error(`[expand] [${i + 1}/${pending.length}] attempt ${attempt} error: ${err.message}`);
             if (err instanceof StabilityError && err.isCreditsError) break; // no point retrying
             if (attempt < 2) {
-              console.warn(`[expand] attempt ${attempt} failed for ${photo.name}: ${err.message} — retrying…`);
+              console.warn(`[expand] attempt ${attempt} failed for ${photo.name}: ${err.message} — retrying in 3s…`);
               await new Promise(r => setTimeout(r, 3000)); // brief pause before retry
             }
           }
@@ -426,7 +438,8 @@ router.post('/expand', requireAdmin, async (req, res) => {
       });
       console.log(`[expand] Done. ${expandedPhotos.length}/${rawPhotos.length} expanded. Errors: ${errors.length}. Status: ${finalStatus}`);
     })().catch(err => {
-      console.error('[expand] Fatal background error:', err.message);
+      console.error('[expand] FATAL background error:', err.message);
+      console.error('[expand] FATAL stack:', err.stack);
       Property.updatePipelineStep(propertyId, 'step2_stability', {
         status: 'failed',
         meta: { ...Property.getById(propertyId)?.pipeline?.step2_stability?.meta, error: err.message },
