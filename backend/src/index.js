@@ -114,9 +114,9 @@ app.use((_req, res) => {
 app.listen(PORT, () => {
   console.log(`[video-pipeline-api] Running on port ${PORT}`);
 
-  // Verify Dropbox token on startup
-  const { testToken } = require('./services/dropbox');
-  testToken()
-    .then(data => console.log('[startup] Dropbox token OK — account uid:', data?.result || JSON.stringify(data)))
+  // Verify Dropbox token on startup by doing a token refresh (doesn't need account_info.read scope)
+  const dropboxSvc = require('./services/dropbox');
+  dropboxSvc.listFolder('/JP Legacy Pipeline')
+    .then(() => console.log('[startup] Dropbox token OK — files.content.read confirmed'))
     .catch(err => console.error('[startup] Dropbox token FAILED:', err.message));
 });
