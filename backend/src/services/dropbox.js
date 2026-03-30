@@ -1,9 +1,42 @@
 const axios = require('axios');
 
-const TOKEN = () => process.env.DROPBOX_TOKEN;
-
 const CONTENT_API = 'https://content.dropboxapi.com/2';
-const API = 'https://api.dropboxapi.com/2';
+const API         = 'https://api.dropboxapi.com/2';
+
+// ── Token management ─────────────────────────────────────────────────────────
+// Supports two modes:
+//   1. DROPBOX_TOKEN (legacy static token — short-lived, kept for fallback)
+//   2. DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET
+//      → auto-refreshes before every request; token cached in memory for 3h.
+let _cachedToken   = null;
+let _cacheExpiry   = 0;   // unix ms
+
+async function TOKEN() {
+  // Mode 1: static token (no refresh credentials set)
+  if (!process.env.DROPBOX_REFRESH_TOKEN) {
+    return process.env.DROPBOX_TOKEN;
+  }
+
+  // Mode 2: refresh token — use cached value if still valid (3-hour window)
+  const now = Date.now();
+  if (_cachedToken && now < _cacheExpiry) return _cachedToken;
+
+  const res = await axios.post(
+    'https://api.dropboxapi.com/oauth2/token',
+    new URLSearchParams({
+      grant_type:    'refresh_token',
+      refresh_token: process.env.DROPBOX_REFRESH_TOKEN,
+      client_id:     process.env.DROPBOX_APP_KEY,
+      client_secret: process.env.DROPBOX_APP_SECRET,
+    }),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+
+  _cachedToken = res.data.access_token;
+  _cacheExpiry = now + 3 * 60 * 60 * 1000; // cache for 3 hours
+  console.log('[dropbox] access token refreshed');
+  return _cachedToken;
+}
 
 // Helper: extract readable Dropbox error
 function dropboxError(err) {
@@ -22,7 +55,7 @@ async function uploadFile(buffer, dropboxPath) {
   try {
     const res = await axios.post(`${CONTENT_API}/files/upload`, buffer, {
       headers: {
-        Authorization: `Bearer ${TOKEN()}`,
+        Authorization: `Bearer ${await TOKEN()}`,
         'Content-Type': 'application/octet-stream',
         'Dropbox-API-Arg': JSON.stringify({
           path: dropboxPath,
@@ -47,7 +80,7 @@ async function getTemporaryLink(dropboxPath) {
     const res = await axios.post(
       `${API}/files/get_temporary_link`,
       { path: dropboxPath },
-      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
     );
     return res.data.link;
   } catch (err) {
@@ -61,7 +94,7 @@ async function getSharedLink(dropboxPath) {
     const res = await axios.post(
       `${API}/sharing/create_shared_link_with_settings`,
       { path: dropboxPath, settings: { requested_visibility: 'public' } },
-      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
     );
     return res.data.url.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '');
   } catch (err) {
@@ -79,7 +112,7 @@ async function listFolder(folderPath) {
     const res = await axios.post(
       `${API}/files/list_folder`,
       { path: folderPath, recursive: false },
-      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
     );
     return res.data.entries;
   } catch (err) {
@@ -93,7 +126,7 @@ async function createFolder(folderPath) {
     await axios.post(
       `${API}/files/create_folder_v2`,
       { path: folderPath, autorename: false },
-      { headers: { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${await TOKEN()}`, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
     const tag = err.response?.data?.error?.['.tag'];
@@ -112,7 +145,7 @@ async function testToken() {
     url: `${API}/check/user`,
     data: { query: 'ping' },
     headers: {
-      Authorization: `Bearer ${TOKEN()}`,
+      Authorization: `Bearer ${await TOKEN()}`,
       'Content-Type': 'application/json',
     },
   });
@@ -133,7 +166,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
       buffer.slice(0, Math.min(CHUNK, total)),
       {
         headers: {
-          Authorization: `Bearer ${TOKEN()}`,
+          Authorization: `Bearer ${await TOKEN()}`,
           'Content-Type': 'application/octet-stream',
           'Dropbox-API-Arg': JSON.stringify({ close: total <= CHUNK }),
         },
@@ -151,7 +184,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
         Buffer.alloc(0),
         {
           headers: {
-            Authorization: `Bearer ${TOKEN()}`,
+            Authorization: `Bearer ${await TOKEN()}`,
             'Content-Type': 'application/octet-stream',
             'Dropbox-API-Arg': JSON.stringify({
               cursor: { session_id: sessionId, offset: Math.min(CHUNK, total) },
@@ -179,7 +212,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
           chunk,
           {
             headers: {
-              Authorization: `Bearer ${TOKEN()}`,
+              Authorization: `Bearer ${await TOKEN()}`,
               'Content-Type': 'application/octet-stream',
               'Dropbox-API-Arg': JSON.stringify({ cursor: { session_id: sessionId, offset }, close: false }),
             },
@@ -196,7 +229,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
           chunk,
           {
             headers: {
-              Authorization: `Bearer ${TOKEN()}`,
+              Authorization: `Bearer ${await TOKEN()}`,
               'Content-Type': 'application/octet-stream',
               'Dropbox-API-Arg': JSON.stringify({
                 cursor: { session_id: sessionId, offset },
