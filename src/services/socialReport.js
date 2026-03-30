@@ -234,26 +234,37 @@ async function fetchFollowerTimeline(http, userId, blogId, network, range, subje
   const raw = await safeGet(http, '/v2/analytics/timelines', params);
   const values = raw?.data?.[0]?.values || [];
   if (!values.length) return { followers: null, followerGrowth: null, followerPct: null };
-  const last = values[values.length - 1].value;
-  const first = values[0].value;
-  const growth = values.length > 1 ? last - first : null;
-  const pct = growth !== null && first > 0 ? (growth / first) * 100 : null;
-  return { followers: last, followerGrowth: growth, followerPct: pct };
+  // API devuelve descendente: values[0] = más reciente, values[last] = más antiguo
+  const current = values[0].value;
+  const oldest  = values[values.length - 1].value;
+  const growth  = values.length > 1 ? current - oldest : null;
+  const pct     = growth !== null && oldest > 0 ? (growth / oldest) * 100 : null;
+  return { followers: current, followerGrowth: growth, followerPct: pct };
 }
 
 async function fetchInstagram(http, userId, blogId, range) {
   const b = { userId, blogId };
-  const [posts, reels, follData] = await Promise.all([
+  const [posts, reels, follData, reachRaw] = await Promise.all([
     safeGet(http, '/stats/instagram/posts', { ...b, start: toV1(range.start), end: toV1(range.end) }),
     safeGet(http, '/stats/instagram/reels', { ...b, start: toV1(range.start), end: toV1(range.end) }),
     fetchFollowerTimeline(http, userId, blogId, 'instagram', range, 'account'),
+    // Account-level weekly reach (includes stories/profile visits, not just post reach)
+    safeGet(http, '/v2/analytics/timelines', {
+      userId, blogId, from: toV2s(range.start), to: toV2e(range.end),
+      metric: 'reach', network: 'instagram', subject: 'account',
+    }),
   ]);
   const all = [...extractPosts(posts), ...extractPosts(reels)];
+  const postReach = all.reduce((s,p) => s + (p.reach||0), 0);
+  // If no posts were published, fall back to account-level weekly reach sum
+  const accountReachValues = reachRaw?.data?.[0]?.values || [];
+  const accountReach = accountReachValues.reduce((s,v) => s + (v.value||0), 0);
+  const totalReach = postReach > 0 ? postReach : accountReach;
   return {
     platform:    'instagram',
     posts:       all,
     postsCount:  all.length,
-    totalReach:  all.reduce((s,p) => s + (p.reach||0), 0),
+    totalReach,
     totalImpr:   all.reduce((s,p) => s + (p.impressions||0), 0),
     avgEng:      all.length ? all.reduce((s,p) => s + (p.engagement||0), 0) / all.length : null,
     topEng:      topByField(all, 'engagement'),
@@ -289,9 +300,11 @@ async function fetchFacebook(http, userId, blogId, range) {
     platform:   'facebook',
     posts:      all,
     postsCount: all.length,
-    totalReach: all.reduce((s,p) => s + (p.reach||0), 0),
+    // Facebook has no 'reach' field — impressionsUnique is the unique-audience equivalent
+    totalReach: all.reduce((s,p) => s + (p.impressionsUnique||p.reach||0), 0),
+    totalImpr:  all.reduce((s,p) => s + (p.impressions||p.impressionsOrganic||0), 0),
     avgEng:     all.length ? all.reduce((s,p) => s + (p.engagement||0), 0) / all.length : null,
-    topEng:     topByField(all, 'engagement', 'reach'),
+    topEng:     topByField(all, 'engagement', 'impressionsUnique'),
     followers:  null, followerGrowth: null, followerPct: null,
   };
 }
@@ -307,11 +320,12 @@ async function fetchYouTube(http, userId, blogId, range) {
       { userId, blogId, from: toV2s(range.start), to: toV2e(range.end), metric: 'subscribersGained', network: 'youtube' }),
   ]);
   const all = extractPosts(raw);
-  const totalWatchSec = all.reduce((s,p) =>
-    s + (p.averageViewDuration||p.watchTime||0), 0);
+  // watchMinutes is total minutes watched per video (not averageViewDuration which is per-view avg)
+  const totalWatchMin = all.reduce((s,p) => s + (p.watchMinutes||0), 0);
   const subVals = subRaw?.data?.[0]?.values || [];
   const gainVals = gainRaw?.data?.[0]?.values || [];
-  const subscribers = subVals.length ? subVals[subVals.length - 1].value : null;
+  // API returns descending: values[0] = most recent
+  const subscribers = subVals.length ? subVals[0].value : null;
   const subGrowth   = gainVals.length ? gainVals.reduce((s,v) => s + (v.value||0), 0) : null;
   const subPct      = subscribers && subGrowth !== null && subscribers > subGrowth
     ? (subGrowth / (subscribers - subGrowth)) * 100 : null;
@@ -320,7 +334,7 @@ async function fetchYouTube(http, userId, blogId, range) {
     posts:       all,
     postsCount:  all.length,
     totalViews:  all.reduce((s,p) => s + (p.views||0), 0),
-    watchHours:  Math.round(totalWatchSec / 3600),
+    watchHours:  Math.round(totalWatchMin / 60),
     topViews:    topByField(all, 'views'),
     subscribers, subGrowth, subPct,
   };
@@ -537,16 +551,16 @@ function platformCard(pf, brand) {
       <div style="color:#CCC;font-size:11px;font-family:Arial;margin-bottom:5px;">${cap(top)}</div>
       <table cellpadding="0" cellspacing="0"><tr>
         <td style="padding-right:10px;color:#888;font-size:10px;font-family:Arial;">
-          👁 <strong style="color:#FFF;">${fmtN(top.videoViews||top.views||top.reach||0)}</strong>
+          👁 <strong style="color:#FFF;">${fmtN(top.viewCount||top.videoViews||top.views||top.reach||0)}</strong>
         </td>
         <td style="padding-right:10px;color:#888;font-size:10px;font-family:Arial;">
-          ❤️ <strong style="color:#FFF;">${fmtN(top.likes||top.reactions||0)}</strong>
+          ❤️ <strong style="color:#FFF;">${fmtN(top.likeCount||top.likes||top.reactions||0)}</strong>
         </td>
         <td style="padding-right:10px;color:#888;font-size:10px;font-family:Arial;">
-          💬 <strong style="color:#FFF;">${fmtN(top.comments||0)}</strong>
+          💬 <strong style="color:#FFF;">${fmtN(top.commentCount||top.comments||0)}</strong>
         </td>
-        ${top.saved ? `<td style="padding-right:10px;color:#888;font-size:10px;font-family:Arial;">🔖 <strong style="color:#FFF;">${fmtN(top.saved)}</strong></td>` : ''}
-        ${top.shares ? `<td style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(top.shares)}</strong></td>` : ''}
+        ${(top.saved) ? `<td style="padding-right:10px;color:#888;font-size:10px;font-family:Arial;">🔖 <strong style="color:#FFF;">${fmtN(top.saved)}</strong></td>` : ''}
+        ${(top.shareCount||top.shares) ? `<td style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(top.shareCount||top.shares)}</strong></td>` : ''}
       </tr></table>
     </td></tr>` : '';
 
