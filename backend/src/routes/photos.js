@@ -159,12 +159,19 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
   (async () => {
     const propertyId = req.params.id;
 
-    function setImportProgress(msg) {
+    function setImportProgress(msg, done = 0, total = 0) {
       const current = Property.getById(propertyId);
       if (!current) return;
       Property.updatePipelineStep(propertyId, 'step1_upload', {
         status: 'in_progress',
-        meta: { ...current.pipeline.step1_upload?.meta, importing: true, importProgress: msg, importError: null },
+        meta: {
+          ...current.pipeline.step1_upload?.meta,
+          importing: true,
+          importProgress: msg,
+          importDone: done,
+          importTotal: total,
+          importError: null,
+        },
       });
     }
 
@@ -174,25 +181,29 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
       const paths = await ensurePropertyFolders(currentProp);
 
       // 2 — List images in shared folder
-      setImportProgress('Listing images in Dropbox folder…');
+      setImportProgress('Listing images in Dropbox folder…', 0, 0);
       const imageEntries = await dropbox.listSharedFolderImages(sharedLink);
 
       if (imageEntries.length === 0) {
         const current = Property.getById(propertyId);
         Property.updatePipelineStep(propertyId, 'step1_upload', {
           status: current?.pipeline?.step1_upload?.meta?.photos?.length > 0 ? 'in_progress' : 'pending',
-          meta: { ...current?.pipeline?.step1_upload?.meta, importing: false, importProgress: null, importError: 'No images found in that Dropbox folder.' },
+          meta: { ...current?.pipeline?.step1_upload?.meta, importing: false, importProgress: null, importDone: 0, importTotal: 0, importError: 'No images found in that Dropbox folder.' },
         });
         return;
       }
+
+      const total = imageEntries.length;
 
       // 3 — Download, validate, and upload each image
       const uploaded = [];
       const errors = [];
 
-      for (let i = 0; i < imageEntries.length; i++) {
+      for (let i = 0; i < total; i++) {
         const entry = imageEntries[i];
-        setImportProgress(`Downloading ${i + 1} of ${imageEntries.length}: ${entry.name}`);
+        const done = i;
+        const pct = Math.round((done / total) * 100);
+        setImportProgress(`Importing photo ${done + 1} of ${total} — ${pct}%`, done, total);
 
         try {
           // Download from shared folder
@@ -241,6 +252,8 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
           dropboxFolders: paths,
           importing: false,
           importProgress: null,
+          importDone: uploaded.length,
+          importTotal: total,
           importError: errors.length > 0 && uploaded.length === 0 ? 'All images failed to import.' : null,
           importSummary: { imported: uploaded.length, failed: errors.length, errors },
         },
