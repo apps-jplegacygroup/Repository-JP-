@@ -278,7 +278,7 @@ router.get('/', (req, res) => {
 });
 
 // DELETE /api/v1/properties/:id/photos/:photoId
-router.delete('/:photoId', requireAdmin, (req, res) => {
+router.delete('/:photoId', (req, res) => {
   const property = Property.getById(req.params.id);
   if (!property) return res.status(404).json({ error: 'Property not found' });
   const photos = property.pipeline.step1_upload?.meta?.photos || [];

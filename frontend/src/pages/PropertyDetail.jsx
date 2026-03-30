@@ -193,8 +193,22 @@ export default function PropertyDetail() {
   async function handleDelete(photoId) {
     try {
       await client.delete(`/properties/${id}/photos/${photoId}`);
-      const updated = await client.get(`/properties/${id}`);
-      setProperty(updated.data.property);
+      // Update immediately without a round-trip fetch
+      setProperty(prev => {
+        const meta = prev.pipeline.step1_upload?.meta || {};
+        const photos = (meta.photos || []).filter(p => p.id !== photoId);
+        return {
+          ...prev,
+          pipeline: {
+            ...prev.pipeline,
+            step1_upload: {
+              ...prev.pipeline.step1_upload,
+              meta: { ...meta, photos },
+            },
+          },
+        };
+      });
+      setOrderedPhotos(prev => prev ? prev.filter(p => p.id !== photoId) : null);
     } catch (err) {
       alert('Failed to delete photo');
     }
@@ -412,7 +426,7 @@ export default function PropertyDetail() {
             {/* Photo grid */}
             <PhotoGrid
               photos={photos}
-              onDelete={user?.role === 'admin' ? handleDelete : null}
+              onDelete={handleDelete}
               onReorder={user?.role === 'admin' ? setOrderedPhotos : null}
             />
 
