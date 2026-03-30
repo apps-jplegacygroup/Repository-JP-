@@ -16,8 +16,8 @@ router.get('/', (req, res) => {
   res.json({ properties });
 });
 
-// POST /api/v1/properties  (admin only)
-router.post('/', requireAdmin, (req, res) => {
+// POST /api/v1/properties
+router.post('/', (req, res) => {
   const { address, assignedTo, notes } = req.body;
   if (!address) {
     return res.status(400).json({ error: 'address is required' });
