@@ -366,6 +366,9 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                       placeholder="Prompt personalizado para re-expandir…"
                       className="w-full bg-gray-900 text-gray-300 text-[10px] p-2 rounded-lg border border-gray-600 resize-none focus:outline-none focus:border-amber-500 placeholder-gray-600 leading-relaxed"
                     />
+                    <p className="text-gray-500 text-[9px] leading-tight -mt-1">
+                      Puedes escribir en español — se traduce automáticamente.
+                    </p>
 
                     {/* AI suggest button */}
                     <button
