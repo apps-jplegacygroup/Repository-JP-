@@ -892,10 +892,27 @@ router.post('/reexpand/:photoId', requireAdmin, async (req, res) => {
   });
 });
 
+// POST /api/v1/properties/:id/photos/higgsfield/pause
+// Sets the paused flag on the running job. The background loop checks this flag
+// after each clip and exits cleanly once the current clip finishes.
+router.post('/higgsfield/pause', requireAdmin, (req, res) => {
+  const propertyId = req.params.id;
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const meta = property.pipeline.step7_higgsfield?.meta || {};
+  Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+    status: 'paused',
+    meta: { ...meta, paused: true },
+  });
+  console.log(`[higgsfield] Pause requested for property ${propertyId}`);
+  res.json({ ok: true });
+});
+
 // POST /api/v1/properties/:id/photos/higgsfield
 // Generates video clips for all photos using Higgsfield AI (Kling model).
 // Returns 202 immediately; processes one photo at a time to respect rate limits.
-// Resume-safe: re-running skips already-completed clips.
+// Resume-safe: re-running skips already-completed clips. Also used to resume after pause.
 router.post('/higgsfield', requireAdmin, async (req, res) => {
   const propertyId = req.params.id;
   const property   = Property.getById(propertyId);
@@ -930,6 +947,7 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
       errors:   prevMeta.errors || [],
       progress: alreadyDone.length,
       total:    ordered.length,
+      paused:   false,               // clear any previous pause flag
       startedAt: new Date().toISOString(),
     },
   });
@@ -1024,6 +1042,17 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
         status: 'in_progress',
         meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
       });
+
+      // Check pause signal before starting the next clip
+      const freshProp = Property.getById(propertyId);
+      if (freshProp?.pipeline?.step7_higgsfield?.meta?.paused) {
+        console.log(`[higgsfield] Paused after ${clips.length}/${ordered.length} clips — ${pending.length - i - 1} remaining`);
+        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+          status: 'paused',
+          meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length, paused: true },
+        });
+        return;
+      }
     }
 
     const finalStatus = clips.length > 0 ? 'done' : 'failed';
