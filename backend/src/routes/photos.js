@@ -661,6 +661,27 @@ Respond ONLY with a raw JSON object, no markdown, no explanation:
   }
 });
 
+// Spaces that contain a floor — use the floor-correction base prompt for these.
+const FLOOR_SPACES = new Set([
+  'living_room', 'living room',
+  'bedroom',
+  'kitchen',
+  'dining_room', 'dining room',
+  'bathroom',
+  'hallway',
+  'entrance',
+]);
+
+const FLOOR_BASE_PROMPT =
+  'Correct the image by adjusting the floor perspective to align naturally with the architecture and camera angle. ' +
+  'Ensure straight lines and proper depth so the floor looks realistic and consistent with the scene. ' +
+  'Adjust the floor color to match the original image tones, ensuring consistent lighting, shadows, and color grading. ' +
+  'The floor should blend naturally with the environment without looking altered or artificial. ' +
+  'Do not modify any other elements of the image. ' +
+  'Do not change furniture, walls, lighting, or architecture. ' +
+  'Only correct the floor perspective and color to match the original image. ' +
+  'Maintain photorealistic quality, natural textures, accurate perspective, and consistent lighting.';
+
 // POST /api/v1/properties/:id/photos/suggest-prompt/:photoId
 // Calls Claude Vision with the expanded image + current prompt + failed checks
 // and returns an improved Stability AI outpaint prompt.
@@ -704,19 +725,25 @@ router.post('/suggest-prompt/:photoId', requireAdmin, async (req, res) => {
       ? `Prompt actual usado (que no funcionó bien): "${currentPrompt}"`
       : 'No se usó prompt personalizado — se usó el prompt por defecto.';
 
-    const response = await claudeClient.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: 300,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
-          },
-          {
-            type: 'text',
-            text: `Eres un experto en prompts para Stability AI aplicados a fotografía inmobiliaria de lujo.
+    const spaceKey = (photo.space || '').toLowerCase().replace(/_/g, ' ').trim();
+    const isFloorSpace = FLOOR_SPACES.has(photo.space) || FLOOR_SPACES.has(spaceKey);
+
+    // For floor spaces: ask Claude for a short space-specific addition only;
+    // we'll prepend the full base floor prompt ourselves so it's always exact.
+    // For other spaces: ask Claude for the full improved prompt.
+    const claudeInstruction = isFloorSpace
+      ? `Eres un experto en fotografía inmobiliaria de lujo y prompts para Stability AI.
+
+Esta foto de ${photo.space?.replace(/_/g, ' ') || 'interior'} ha sido expandida usando Stability AI outpaint y tiene problemas.
+
+${checksText}
+${promptContext}
+
+Ya tenemos este prompt base para corregir el piso:
+"${FLOOR_BASE_PROMPT}"
+
+Analiza la imagen y escribe UNA SOLA oración adicional en inglés que describa detalles específicos de ESTE espacio (materiales del piso, colores dominantes, estilo arquitectónico, elementos visibles) para añadir contexto útil a ese prompt base. NO repitas ninguna parte del prompt base. Solo la oración adicional, sin explicación, sin comillas, sin texto extra.`
+      : `Eres un experto en prompts para Stability AI aplicados a fotografía inmobiliaria de lujo.
 
 Esta foto ha sido expandida de 4:3 a 9:16 (vertical) usando Stability AI outpaint y el resultado tiene problemas.
 
@@ -730,14 +757,32 @@ Analiza la imagen y genera un prompt mejorado para Stability AI outpaint que cor
 - Ser específico para este espacio/ambiente (no genérico)
 - Siempre incluir: "Maintain exact floor material continuity (same color, texture, and pattern), preserve furniture style and scale, match wall colors and textures seamlessly, no abrupt transitions."
 
-Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin comillas, sin texto adicional. Máximo 3 oraciones.`,
+Responde ÚNICAMENTE con el prompt mejorado en inglés, sin explicación, sin comillas, sin texto adicional. Máximo 3 oraciones.`;
+
+    const response = await claudeClient.messages.create({
+      model: 'claude-opus-4-5',
+      max_tokens: 300,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
           },
+          { type: 'text', text: claudeInstruction },
         ],
       }],
     });
 
-    const suggestedPrompt = response.content[0].text.trim();
-    console.log(`[suggest-prompt] ${photo.name}: "${suggestedPrompt.slice(0, 100)}"`);
+    const claudeAddition = response.content[0].text.trim();
+
+    // For floor spaces: base prompt + Claude's space-specific addition
+    // For other spaces: Claude's full prompt
+    const suggestedPrompt = isFloorSpace
+      ? `${FLOOR_BASE_PROMPT} ${claudeAddition}`
+      : claudeAddition;
+
+    console.log(`[suggest-prompt] ${photo.name} (space=${photo.space}, floor=${isFloorSpace}): "${suggestedPrompt.slice(0, 120)}"`);
     res.json({ suggestedPrompt });
 
   } catch (err) {
