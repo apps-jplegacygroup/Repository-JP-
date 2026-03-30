@@ -371,62 +371,69 @@ router.post('/expand', requireAdmin, async (req, res) => {
         return { expandedPath, thumbnailUrl };
       }
 
-      for (let i = 0; i < pending.length; i++) {
-        const photo = pending[i];
+      // Process in parallel batches of 3 — ~3x faster than sequential
+      const EXPAND_BATCH_SIZE = 3;
 
+      for (let i = 0; i < pending.length; i += EXPAND_BATCH_SIZE) {
         if (creditsExhausted) {
-          errors.push({ name: photo.name, error: 'Skipped — Stability AI credits exhausted' });
-          Property.updatePipelineStep(propertyId, 'step2_stability', {
-            status: 'in_progress',
-            meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
-          });
-          continue;
+          // Mark all remaining as skipped
+          for (const p of pending.slice(i)) {
+            errors.push({ name: p.name, error: 'Skipped — Stability AI credits exhausted' });
+          }
+          break;
         }
 
-        console.log(`[expand] [${i + 1}/${pending.length}] Starting: ${photo.name} (id=${photo.id}) dropboxPath=${photo.dropboxPath}`);
+        const batch = pending.slice(i, i + EXPAND_BATCH_SIZE);
+        const batchNum = Math.floor(i / EXPAND_BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(pending.length / EXPAND_BATCH_SIZE);
+        console.log(`[expand] batch ${batchNum}/${totalBatches}: ${batch.map(p => p.name).join(', ')}`);
 
-        let result = null;
-        let lastErr = null;
+        const batchResults = await Promise.allSettled(
+          batch.map(async (photo) => {
+            let lastErr = null;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              try {
+                console.log(`[expand] attempt ${attempt}: ${photo.name}`);
+                const result = await withTimeout(processOnePhoto(photo), 90_000);
+                console.log(`[expand] ✓ ${photo.name}`);
+                return result;
+              } catch (err) {
+                lastErr = err;
+                console.error(`[expand] attempt ${attempt} failed for ${photo.name}: ${err.message}`);
+                if (err instanceof StabilityError && err.isCreditsError) throw err; // no point retrying
+                if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
+              }
+            }
+            throw lastErr;
+          })
+        );
 
-        // Try up to 2 attempts (original + 1 retry), each with a 90s outer timeout
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            console.log(`[expand] [${i + 1}/${pending.length}] attempt ${attempt}: calling processOnePhoto`);
-            result = await withTimeout(processOnePhoto(photo), 90_000);
-            console.log(`[expand] [${i + 1}/${pending.length}] attempt ${attempt}: processOnePhoto returned OK`);
-            break; // success
-          } catch (err) {
-            lastErr = err;
-            console.error(`[expand] [${i + 1}/${pending.length}] attempt ${attempt} error: ${err.message}`);
-            if (err instanceof StabilityError && err.isCreditsError) break; // no point retrying
-            if (attempt < 2) {
-              console.warn(`[expand] attempt ${attempt} failed for ${photo.name}: ${err.message} — retrying in 3s…`);
-              await new Promise(r => setTimeout(r, 3000)); // brief pause before retry
+        for (let j = 0; j < batch.length; j++) {
+          const photo   = batch[j];
+          const outcome = batchResults[j];
+          if (outcome.status === 'fulfilled') {
+            const result = outcome.value;
+            expandedPhotos.push({
+              id: photo.id,
+              name: photo.name,
+              originalPath: photo.dropboxPath,
+              expandedPath: result.expandedPath,
+              thumbnailUrl: result.thumbnailUrl,
+              expandedAt: new Date().toISOString(),
+            });
+          } else {
+            const err = outcome.reason;
+            console.error(`[expand] ✗ ${photo.name}: ${err.message}`);
+            if (err instanceof StabilityError && err.isCreditsError) {
+              creditsExhausted = true;
+              errors.push({ name: photo.name, error: 'Stability AI credits exhausted — purchase more at platform.stability.ai/account/credits' });
+            } else {
+              errors.push({ name: photo.name, error: err.message });
             }
           }
         }
 
-        if (result) {
-          console.log(`[expand] ✓ ${photo.name}`);
-          expandedPhotos.push({
-            id: photo.id,
-            name: photo.name,
-            originalPath: photo.dropboxPath,
-            expandedPath: result.expandedPath,
-            thumbnailUrl: result.thumbnailUrl,
-            expandedAt: new Date().toISOString(),
-          });
-        } else {
-          console.error(`[expand] ✗ ${photo.name} (both attempts failed): ${lastErr.message}`);
-          if (lastErr instanceof StabilityError && lastErr.isCreditsError) {
-            creditsExhausted = true;
-            errors.push({ name: photo.name, error: 'Stability AI credits exhausted — purchase more at platform.stability.ai/account/credits' });
-          } else {
-            errors.push({ name: photo.name, error: lastErr.message });
-          }
-        }
-
-        // Persist progress after every photo so resume works after a restart
+        // Persist after each batch (3 photos) instead of after every single photo
         Property.updatePipelineStep(propertyId, 'step2_stability', {
           status: 'in_progress',
           meta: { expandedPhotos: [...expandedPhotos], errors: [...errors], progress: expandedPhotos.length, total: rawPhotos.length },
@@ -961,92 +968,102 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
     const clips  = [...alreadyDone];
     const errors = []; // Start fresh each run — stale errors from previous runs are discarded
 
-    for (let i = 0; i < pending.length; i++) {
-      const photo = pending[i];
-      const ep    = expandedPhotos.find(e => e.id === photo.photoId);
-      const entry = klingPrompts[photo.photoId];
+    // Process in parallel batches of 2 — doubles throughput while respecting Higgsfield rate limits
+    const CLIP_BATCH_SIZE = 2;
 
-      if (!ep) {
-        errors.push({ photoId: photo.photoId, name: photo.name, error: 'Expanded photo not found in step2_stability' });
+    for (let i = 0; i < pending.length; i += CLIP_BATCH_SIZE) {
+      const batch = pending.slice(i, i + CLIP_BATCH_SIZE);
+
+      // Pre-validate: separate photos with missing data so they fail fast
+      const validItems  = [];
+      for (const photo of batch) {
+        const ep    = expandedPhotos.find(e => e.id === photo.photoId);
+        const entry = klingPrompts[photo.photoId];
+        if (!ep) {
+          errors.push({ photoId: photo.photoId, name: photo.name, error: 'Expanded photo not found in step2_stability' });
+        } else if (!entry?.prompt) {
+          errors.push({ photoId: photo.photoId, name: photo.name, error: 'No Kling prompt found in step6_kling — generate prompts first' });
+        } else {
+          validItems.push({ photo, ep, entry });
+        }
+      }
+
+      if (validItems.length === 0) {
         Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
           status: 'in_progress',
           meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
         });
         continue;
       }
-      if (!entry?.prompt) {
-        errors.push({ photoId: photo.photoId, name: photo.name, error: 'No Kling prompt found in step6_kling — generate prompts first' });
-        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
-          status: 'in_progress',
-          meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
-        });
-        continue;
+
+      // Mark all batch photos as "generating" before starting
+      Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+        status: 'in_progress',
+        meta: {
+          clips:    [...clips, ...validItems.map(({ photo }) => ({ photoId: photo.photoId, name: photo.name, status: 'generating' }))],
+          errors,
+          progress: clips.length,
+          total:    ordered.length,
+        },
+      });
+
+      // Submit, poll, download and upload all items in the batch simultaneously
+      const batchResults = await Promise.allSettled(
+        validItems.map(async ({ photo, ep, entry }) => {
+          console.log(`[higgsfield] Submitting: ${photo.name}`);
+          const imageUrl = await dropbox.getTemporaryLink(ep.expandedPath);
+          const job      = await submitClip(imageUrl, entry.prompt, 5);
+          console.log(`[higgsfield] Job ${job.request_id} submitted for ${photo.name}`);
+
+          const result   = await pollClip(job.request_id, { maxWaitMs: 360_000, intervalMs: 12_000 });
+          const videoUrl = result.video?.url;
+          if (!videoUrl) throw new Error('Higgsfield returned completed status but no video.url');
+
+          console.log(`[higgsfield] Downloading clip for ${photo.name}…`);
+          const videoRes    = await axios.get(videoUrl, { responseType: 'arraybuffer', timeout: 120_000 });
+          const videoBuffer = Buffer.from(videoRes.data);
+          const clipPath    = `${paths.clips}/${photo.photoId}.mp4`;
+          await dropbox.uploadFile(videoBuffer, clipPath);
+          const clipDropboxUrl = await dropbox.getTemporaryLink(clipPath);
+
+          return { photo, clipPath, clipDropboxUrl, requestId: job.request_id };
+        })
+      );
+
+      // Collect results
+      for (let j = 0; j < validItems.length; j++) {
+        const { photo } = validItems[j];
+        const outcome   = batchResults[j];
+        if (outcome.status === 'fulfilled') {
+          const { clipPath, clipDropboxUrl, requestId } = outcome.value;
+          clips.push({
+            photoId:     photo.photoId,
+            name:        photo.name,
+            space:       photo.space,
+            wowFactor:   photo.wow_factor,
+            status:      'done',
+            requestId,
+            dropboxPath: clipPath,
+            dropboxUrl:  clipDropboxUrl,
+            generatedAt: new Date().toISOString(),
+          });
+          console.log(`[higgsfield] ✓ ${photo.name} (${clips.length}/${ordered.length})`);
+        } else {
+          console.error(`[higgsfield] ✗ ${photo.name}: ${outcome.reason.message}`);
+          errors.push({ photoId: photo.photoId, name: photo.name, error: outcome.reason.message });
+        }
       }
 
-      try {
-        console.log(`[higgsfield] ${clips.length + 1}/${ordered.length} Submitting: ${photo.name}`);
-
-        // Fresh Dropbox temp link — old links may have expired
-        const imageUrl = await dropbox.getTemporaryLink(ep.expandedPath);
-
-        // 1 — Submit job to Higgsfield
-        const job = await submitClip(imageUrl, entry.prompt, 5);
-        console.log(`[higgsfield] Job ${job.request_id} submitted for ${photo.name}`);
-
-        // Mark this photo as "generating" so frontend can show it immediately
-        Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
-          status: 'in_progress',
-          meta: {
-            clips:    [...clips, { photoId: photo.photoId, name: photo.name, status: 'generating', requestId: job.request_id }],
-            errors,
-            progress: clips.length,
-            total:    ordered.length,
-          },
-        });
-
-        // 2 — Poll until completed (max 6 min per clip, 12s interval)
-        const result   = await pollClip(job.request_id, { maxWaitMs: 360_000, intervalMs: 12_000 });
-        const videoUrl = result.video?.url;
-        if (!videoUrl) throw new Error('Higgsfield returned completed status but no video.url');
-
-        // 3 — Download clip
-        console.log(`[higgsfield] Downloading clip for ${photo.name}…`);
-        const videoRes    = await axios.get(videoUrl, { responseType: 'arraybuffer', timeout: 120_000 });
-        const videoBuffer = Buffer.from(videoRes.data);
-
-        // 4 — Upload to Dropbox 04_clips/
-        const clipPath       = `${paths.clips}/${photo.photoId}.mp4`;
-        await dropbox.uploadFile(videoBuffer, clipPath);
-        const clipDropboxUrl = await dropbox.getTemporaryLink(clipPath);
-
-        clips.push({
-          photoId:     photo.photoId,
-          name:        photo.name,
-          space:       photo.space,
-          wowFactor:   photo.wow_factor,
-          status:      'done',
-          requestId:   job.request_id,
-          dropboxPath: clipPath,
-          dropboxUrl:  clipDropboxUrl,
-          generatedAt: new Date().toISOString(),
-        });
-        console.log(`[higgsfield] ✓ ${photo.name} (${clips.length}/${ordered.length})`);
-
-      } catch (err) {
-        console.error(`[higgsfield] ✗ ${photo.name}: ${err.message}`);
-        errors.push({ photoId: photo.photoId, name: photo.name, error: err.message });
-      }
-
-      // Persist progress after every photo
+      // Persist after each batch (every 2 photos) instead of after every single photo
       Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
         status: 'in_progress',
         meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length },
       });
 
-      // Check pause signal before starting the next clip
+      // Check pause signal before starting the next batch
       const freshProp = Property.getById(propertyId);
       if (freshProp?.pipeline?.step7_higgsfield?.meta?.paused) {
-        console.log(`[higgsfield] Paused after ${clips.length}/${ordered.length} clips — ${pending.length - i - 1} remaining`);
+        console.log(`[higgsfield] Paused after ${clips.length}/${ordered.length} clips — ${pending.length - i - CLIP_BATCH_SIZE} remaining`);
         Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
           status: 'paused',
           meta: { clips: [...clips], errors: [...errors], progress: clips.length, total: ordered.length, paused: true },
