@@ -818,6 +818,43 @@ router.post('/reexpand/:photoId', requireAdmin, async (req, res) => {
   });
 });
 
+// GET /api/v1/properties/:id/photos/expanded-download-links
+// Returns fresh Dropbox temp links for all expanded photos (used for ZIP download)
+router.get('/expanded-download-links', requireAdmin, async (req, res) => {
+  const property = Property.getById(req.params.id);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const links = await Promise.all(expandedPhotos.map(async (ep) => {
+    try {
+      const url = await dropbox.getTemporaryLink(ep.expandedPath);
+      return { id: ep.id, name: ep.name, url };
+    } catch {
+      return { id: ep.id, name: ep.name, url: null };
+    }
+  }));
+  res.json({ links });
+});
+
+// DELETE /api/v1/properties/:id/photos/clips/:photoId
+// Removes a clip from step7_higgsfield meta (does not delete from Dropbox)
+router.delete('/clips/:photoId', requireAdmin, (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const meta = property.pipeline.step7_higgsfield?.meta || {};
+  const clips = (meta.clips || []).filter(c => c.photoId !== photoId);
+  const total = Math.max(0, (meta.total || 1) - 1);
+
+  Property.updatePipelineStep(propertyId, 'step7_higgsfield', {
+    status: property.pipeline.step7_higgsfield?.status || 'done',
+    meta: { ...meta, clips, total },
+  });
+  console.log(`[higgsfield] Deleted clip ${photoId} from property ${propertyId}. Remaining: ${clips.length}`);
+  res.json({ ok: true, remaining: clips.length });
+});
+
 // POST /api/v1/properties/:id/photos/higgsfield/pause
 // Sets the paused flag on the running job. The background loop checks this flag
 // after each clip and exits cleanly once the current clip finishes.
@@ -931,7 +968,22 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
         validItems.map(async ({ photo, ep, entry }) => {
           console.log(`[higgsfield] Submitting: ${photo.name}`);
           const imageUrl = await dropbox.getTemporaryLink(ep.expandedPath);
-          const job      = await submitClip(imageUrl, entry.prompt, 5);
+
+          // Resolve end frame URL if this is a connected scene
+          let endFrameImageUrl = null;
+          if (entry.endFramePhotoId) {
+            const endEp = expandedPhotos.find(e => e.id === entry.endFramePhotoId);
+            if (endEp) {
+              try {
+                endFrameImageUrl = await dropbox.getTemporaryLink(endEp.expandedPath);
+                console.log(`[higgsfield] Connected scene: ${photo.name} → endFrame=${entry.endFramePhotoId}`);
+              } catch (e) {
+                console.warn(`[higgsfield] Could not get end frame URL for ${entry.endFramePhotoId}: ${e.message}`);
+              }
+            }
+          }
+
+          const job = await submitClip(imageUrl, entry.prompt, 5, endFrameImageUrl);
           console.log(`[higgsfield] Job ${job.request_id} submitted for ${photo.name}`);
 
           const result   = await pollClip(job.request_id, { maxWaitMs: 360_000, intervalMs: 12_000 });
@@ -945,7 +997,7 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
           await dropbox.uploadFile(videoBuffer, clipPath);
           const clipDropboxUrl = await dropbox.getTemporaryLink(clipPath);
 
-          return { photo, clipPath, clipDropboxUrl, requestId: job.request_id };
+          return { photo, clipPath, clipDropboxUrl, requestId: job.request_id, endFramePhotoId: entry.endFramePhotoId || null };
         })
       );
 
@@ -954,17 +1006,19 @@ router.post('/higgsfield', requireAdmin, async (req, res) => {
         const { photo } = validItems[j];
         const outcome   = batchResults[j];
         if (outcome.status === 'fulfilled') {
-          const { clipPath, clipDropboxUrl, requestId } = outcome.value;
+          const { clipPath, clipDropboxUrl, requestId, endFramePhotoId } = outcome.value;
           clips.push({
-            photoId:     photo.photoId,
-            name:        photo.name,
-            space:       photo.space,
-            wowFactor:   photo.wow_factor,
-            status:      'done',
+            photoId:        photo.photoId,
+            name:           photo.name,
+            space:          photo.space,
+            wowFactor:      photo.wow_factor,
+            status:         'done',
             requestId,
-            dropboxPath: clipPath,
-            dropboxUrl:  clipDropboxUrl,
-            generatedAt: new Date().toISOString(),
+            dropboxPath:    clipPath,
+            dropboxUrl:     clipDropboxUrl,
+            endFramePhotoId: endFramePhotoId || null,
+            connectedScene:  !!endFramePhotoId,
+            generatedAt:    new Date().toISOString(),
           });
           console.log(`[higgsfield] ✓ ${photo.name} (${clips.length}/${ordered.length})`);
         } else {

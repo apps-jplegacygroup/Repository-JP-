@@ -18,12 +18,16 @@ function authHeader() {
 }
 
 // Submit an image-to-video job.
-// imageUrl   — publicly accessible URL (e.g. Dropbox temp link)
-// prompt     — Kling movement prompt
-// duration   — seconds (default 5 — min Higgsfield supports is 5s)
-async function submitClip(imageUrl, prompt, duration = 5) {
+// imageUrl         — publicly accessible URL (e.g. Dropbox temp link)
+// prompt           — Kling movement prompt
+// duration         — seconds (default 5 — min Higgsfield supports is 5s)
+// endFrameImageUrl — optional URL for the end frame (connected scene)
+async function submitClip(imageUrl, prompt, duration = 5, endFrameImageUrl = null) {
   const MAX_ATTEMPTS = 3;
   let lastErr;
+
+  const payload = { image_url: imageUrl, prompt, duration };
+  if (endFrameImageUrl) payload.end_frame_image_url = endFrameImageUrl;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const res = await fetch(`${BASE_URL}/${MODEL}`, {
@@ -33,7 +37,7 @@ async function submitClip(imageUrl, prompt, duration = 5) {
         'Content-Type': 'application/json',
         Accept:         'application/json',
       },
-      body:   JSON.stringify({ image_url: imageUrl, prompt, duration }),
+      body:   JSON.stringify(payload),
       signal: AbortSignal.timeout(30_000),
     });
 
