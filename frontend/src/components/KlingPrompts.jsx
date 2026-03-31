@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import client from '../api/client';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -21,13 +21,74 @@ const MOVEMENT_LABELS = {
   static:          'Static',
 };
 
+// ── Movement templates ────────────────────────────────────────────────────────
+const MOVEMENT_TEMPLATES = [
+  {
+    key: 'lateral_pan',
+    icon: '↔',
+    name: 'Lateral Pan',
+    hint: 'Baño / Shower',
+    movement: 'pan_left',
+    prompt: 'Subtle cinematic camera movement with a gentle, slow lateral pan across the bathroom shower area. The camera glides smoothly to reveal the shower space in a natural and elegant way. The motion should feel like a perfectly stabilized floating camera, with no walking motion, no handheld feel, and no abrupt speed changes. Do not modify architecture, materials, lighting, or environment. Do not add or remove any elements. Only animate the camera movement. Maintain straight architectural lines, realistic perspective, and hyperrealistic quality. Ultra smooth stabilized motion, no shake, no wobble, no bounce, professional luxury real estate cinematography.',
+  },
+  {
+    key: 'dolly_push',
+    icon: '→',
+    name: 'Dolly Push',
+    hint: 'Corredor / Cocina',
+    movement: 'dolly_forward',
+    prompt: 'Slow cinematic dolly push forward through the space, camera glides steadily revealing depth and architecture. Perfectly stabilized floating camera motion, no handheld feel, no wobble. Do not modify any elements. Ultra smooth professional real estate cinematography.',
+  },
+  {
+    key: 'crane_up',
+    icon: '↑',
+    name: 'Crane Up',
+    hint: 'Exterior / Fachada',
+    movement: 'aerial_descent',
+    prompt: 'Slow cinematic crane up from ground level, gradually revealing the full property and surrounding landscape. Perfectly stabilized aerial motion, smooth and fluid throughout. Professional luxury real estate drone cinematography.',
+  },
+  {
+    key: 'orbit',
+    icon: '○',
+    name: 'Orbit',
+    hint: 'Fachada / Elemento arq.',
+    movement: 'orbit',
+    prompt: 'Slow cinematic orbit around the architectural feature, camera maintains consistent distance while rotating smoothly. Perfectly stabilized, no shake, no wobble. Professional luxury real estate cinematography.',
+  },
+  {
+    key: 'tracking_lateral',
+    icon: '⇔',
+    name: 'Tracking Lateral',
+    hint: 'Living / Pool / Patio',
+    movement: 'pan_right',
+    prompt: 'Smooth cinematic tracking lateral shot, camera glides parallel to the space revealing its full width and depth. Perfectly stabilized floating motion, no bounce, no handheld feel. Ultra smooth professional real estate cinematography.',
+  },
+  {
+    key: 'fpv_forward',
+    icon: '▶',
+    name: 'FPV Forward',
+    hint: 'Entrada / Driveway',
+    movement: 'dolly_forward',
+    prompt: 'Smooth cinematic FPV forward motion approaching the entrance, camera glides steadily forward revealing the property. Perfectly stabilized, no shake, no wobble, no handheld motion. Professional luxury real estate cinematography.',
+  },
+  {
+    key: 'pullback_ascent',
+    icon: '↗',
+    name: 'Pull-back + Ascenso',
+    hint: 'Cierre épico',
+    movement: 'dolly_back',
+    prompt: 'Slow cinematic pull-back combined with gentle upward ascent, gradually revealing the full property and its surroundings in an epic establishing shot. Perfectly stabilized drone motion, ultra smooth throughout. Professional luxury real estate cinematography.',
+  },
+];
+
 // ── Checklist auto-validator ──────────────────────────────────────────────────
 function validatePrompt(prompt = '', movement = '') {
   const p = prompt.toLowerCase();
   const motionVerbs = ['zoom', 'pan', 'dolly', 'orbit', 'aerial', 'descent',
-    'parallax', 'forward', 'backward', 'tilt', 'glide', 'drift', 'sweep', 'pull'];
+    'parallax', 'forward', 'backward', 'tilt', 'glide', 'drift', 'sweep', 'pull',
+    'tracking', 'crane', 'fpv', 'lateral', 'ascent', 'push'];
   const stabilityWords = ['stabilized', 'anti-shake', 'smooth', 'steady',
-    'stable', 'cinematic', 'gimbal', 'fluid'];
+    'stable', 'cinematic', 'gimbal', 'fluid', 'no shake', 'no wobble'];
   return {
     singleMovement: !!movement && !['multiple movements', 'various', 'and then'].some(w => p.includes(w)),
     multiShotOff:   !p.includes('multi-shot') && !p.includes('multi shot') && !p.includes('cut to') && !p.includes('cuts to'),
@@ -100,11 +161,15 @@ function PhotoPromptRow({
   photo, index, thumbUrl, entry, onChange, isGenerating, onGenerate,
   onDelete, otherPhotos, thumbMap,
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied,            setCopied]            = useState(false);
   const [showEndFramePicker, setShowEndFramePicker] = useState(false);
-  const isWow    = photo.wow_factor >= 10;
-  const isEmpty  = !entry.prompt?.trim();
-  const checks   = validatePrompt(entry.prompt, entry.movement);
+  const [customDesc,         setCustomDesc]         = useState('');
+  const [aiGenerated,        setAiGenerated]        = useState(false);
+  const [showTemplates,      setShowTemplates]       = useState(false);
+
+  const isWow     = photo.wow_factor >= 10;
+  const isEmpty   = !entry.prompt?.trim();
+  const checks    = validatePrompt(entry.prompt, entry.movement);
   const allChecked = Object.values(checks).every(Boolean);
 
   const endFrameThumb = entry.endFramePhotoId ? thumbMap[entry.endFramePhotoId] : null;
@@ -126,6 +191,22 @@ function PhotoPromptRow({
     }
   }
 
+  function handleManualEdit(value) {
+    onChange({ prompt: value });
+    if (aiGenerated) setAiGenerated(false);
+  }
+
+  function applyTemplate(tpl) {
+    onChange({ prompt: tpl.prompt, movement: tpl.movement });
+    setAiGenerated(false);
+    setShowTemplates(false);
+  }
+
+  async function handleGenerateWithDesc() {
+    await onGenerate(customDesc);
+    setAiGenerated(true);
+  }
+
   return (
     <>
       {showEndFramePicker && (
@@ -144,7 +225,6 @@ function PhotoPromptRow({
         {/* Thumbnail(s) */}
         <div className="shrink-0">
           {entry.endFramePhotoId ? (
-            /* Connected scene: Start → End thumbnails */
             <div className="flex items-center gap-1">
               <div className="w-12 sm:w-14">
                 <div className="aspect-[9/16] rounded-xl overflow-hidden bg-gray-800 relative">
@@ -175,7 +255,6 @@ function PhotoPromptRow({
               </div>
             </div>
           ) : (
-            /* Single start frame */
             <div className="w-16 sm:w-20">
               <div className="aspect-[9/16] rounded-xl overflow-hidden bg-gray-800 relative">
                 {thumbUrl ? (
@@ -207,6 +286,11 @@ function PhotoPromptRow({
             <span className={`text-xs font-medium ${isWow ? 'text-amber-400' : 'text-gray-500'}`}>
               {isWow ? '★' : '·'} WOW {photo.wow_factor}/10
             </span>
+            {aiGenerated && !isEmpty && (
+              <span className="text-[9px] font-semibold text-violet-400 bg-violet-500/10 border border-violet-500/30 px-1.5 py-0.5 rounded-full">
+                ✏ Generado por IA
+              </span>
+            )}
             <span className="ml-auto text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full shrink-0">
               Multi-shot OFF · 3s · 9:16 1080p
             </span>
@@ -226,6 +310,34 @@ function PhotoPromptRow({
             </select>
           </div>
 
+          {/* Templates selector */}
+          <div>
+            <button
+              onClick={() => setShowTemplates(v => !v)}
+              className="text-[10px] text-gray-500 hover:text-amber-400 border border-gray-700 hover:border-amber-500/50 px-2 py-0.5 rounded-full transition-colors"
+            >
+              📋 {showTemplates ? 'Ocultar templates' : 'Usar template'}
+            </button>
+            {showTemplates && (
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
+                {MOVEMENT_TEMPLATES.map(tpl => (
+                  <button
+                    key={tpl.key}
+                    onClick={() => applyTemplate(tpl)}
+                    title={tpl.hint}
+                    className="flex items-center gap-1.5 px-2 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-amber-500/40 rounded-lg text-left transition-colors"
+                  >
+                    <span className="text-amber-400 text-sm shrink-0">{tpl.icon}</span>
+                    <div className="min-w-0">
+                      <p className="text-gray-200 text-[10px] font-semibold truncate">{tpl.name}</p>
+                      <p className="text-gray-500 text-[9px] truncate">{tpl.hint}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* End Frame control */}
           <div className="flex items-center gap-2">
             <span className="text-gray-500 text-xs shrink-0">End Frame:</span>
@@ -234,18 +346,8 @@ function PhotoPromptRow({
                 <span className="text-amber-400 text-[10px] font-semibold bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full truncate capitalize">
                   ⛓ {endFramePhoto?.space?.replace(/_/g, ' ') || 'Conectado'}
                 </span>
-                <button
-                  onClick={() => setShowEndFramePicker(true)}
-                  className="text-[10px] text-gray-500 hover:text-gray-300 underline shrink-0"
-                >
-                  Cambiar
-                </button>
-                <button
-                  onClick={() => onChange({ endFramePhotoId: null })}
-                  className="text-[10px] text-red-500 hover:text-red-400 underline shrink-0"
-                >
-                  Quitar
-                </button>
+                <button onClick={() => setShowEndFramePicker(true)} className="text-[10px] text-gray-500 hover:text-gray-300 underline shrink-0">Cambiar</button>
+                <button onClick={() => onChange({ endFramePhotoId: null })} className="text-[10px] text-red-500 hover:text-red-400 underline shrink-0">Quitar</button>
               </div>
             ) : (
               <button
@@ -258,19 +360,18 @@ function PhotoPromptRow({
             )}
           </div>
 
-          {/* Prompt textarea + AI generate button */}
+          {/* Prompt textarea */}
           <div className="relative">
             <textarea
               value={entry.prompt}
-              onChange={e => onChange({ prompt: e.target.value })}
+              onChange={e => handleManualEdit(e.target.value)}
               rows={isEmpty ? 2 : 3}
               disabled={isGenerating}
               className={`w-full bg-gray-800 border text-gray-200 text-xs p-2.5 rounded-lg resize-none focus:outline-none focus:border-amber-500 placeholder-gray-600 leading-relaxed transition-colors disabled:opacity-60 ${
                 isEmpty ? 'border-violet-600/60 border-dashed' : 'border-gray-700'
               }`}
-              placeholder="Prompt de movimiento Kling 3.0… o usa ✨ para generar con IA"
+              placeholder="Prompt de movimiento Kling 3.0… usa ✨ para generar con IA o selecciona un template"
             />
-            {/* Generating overlay */}
             {isGenerating && (
               <div className="absolute inset-0 bg-gray-900/70 rounded-lg flex items-center justify-center gap-2 text-violet-400 text-xs font-medium">
                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -281,9 +382,10 @@ function PhotoPromptRow({
               </div>
             )}
           </div>
-          {/* AI generate button — always visible, prominent when empty */}
+
+          {/* Quick AI generate (no description) */}
           <button
-            onClick={onGenerate}
+            onClick={() => { onGenerate(''); setAiGenerated(true); }}
             disabled={isGenerating}
             className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               isEmpty
@@ -299,12 +401,38 @@ function PhotoPromptRow({
                 </svg>
                 Generando…
               </>
-            ) : isEmpty ? (
-              <>✨ Generar con IA</>
-            ) : (
-              <>✨ Regenerar con IA</>
-            )}
+            ) : isEmpty ? <>✨ Generar con IA</> : <>✨ Regenerar con IA</>}
           </button>
+
+          {/* Ask Claude — custom description */}
+          <div className="space-y-1.5 pt-1 border-t border-gray-800">
+            <p className="text-gray-600 text-[9px] font-semibold uppercase tracking-wide">Dirección creativa</p>
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={customDesc}
+                onChange={e => setCustomDesc(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !isGenerating && customDesc.trim()) handleGenerateWithDesc(); }}
+                disabled={isGenerating}
+                placeholder="Describe lo que quieres lograr con este clip… (ej: 'quiero que la cámara entre por la puerta principal y revele la sala')"
+                className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 text-[10px] px-2 py-1.5 rounded-lg focus:outline-none focus:border-violet-500 placeholder-gray-600 disabled:opacity-50"
+              />
+              <button
+                onClick={handleGenerateWithDesc}
+                disabled={isGenerating || !customDesc.trim()}
+                className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors whitespace-nowrap"
+              >
+                {isGenerating ? (
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                ) : '✨'}
+                Generar con Claude
+              </button>
+            </div>
+            <p className="text-gray-600 text-[9px]">Puedes escribir en español — Claude lo traducirá automáticamente.</p>
+          </div>
 
           {/* Checklist */}
           <div className="flex flex-wrap gap-1.5">
@@ -361,11 +489,9 @@ function PhotoPromptRow({
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos, step6, onSaved, onContinue, onDeletePhoto }) {
-  // Build thumbMap
   const thumbMap = {};
   for (const ep of expandedPhotos || []) thumbMap[ep.id] = ep.thumbnailUrl;
 
-  // Init prompt entries — prefer saved step6 data, fallback to Claude's kling_prompt
   const savedEntries = step6?.meta?.klingPrompts || {};
   const [entries, setEntries] = useState(() => {
     const init = {};
@@ -380,10 +506,10 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     return init;
   });
 
-  const [saving,       setSaving]       = useState(false);
-  const [saved,        setSaved]        = useState(!!step6?.meta?.savedAt);
-  const [dirty,        setDirty]        = useState(false);
-  const [generating,   setGenerating]   = useState({});  // { [photoId]: true }
+  const [saving,        setSaving]        = useState(false);
+  const [saved,         setSaved]         = useState(!!step6?.meta?.savedAt);
+  const [dirty,         setDirty]         = useState(false);
+  const [generating,    setGenerating]    = useState({});
   const [generatingAll, setGeneratingAll] = useState(false);
 
   function handleChange(photoId, updates) {
@@ -392,12 +518,13 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     setSaved(false);
   }
 
-  async function handleGenerateSingle(photo) {
+  // customDesc is passed from PhotoPromptRow; empty string = no custom direction
+  async function handleGenerateSingle(photo, customDesc = '') {
     setGenerating(prev => ({ ...prev, [photo.photoId]: true }));
     try {
       const { data } = await client.post(
         `/properties/${propertyId}/photos/generate-kling-prompt/${photo.photoId}`,
-        { space: photo.space, description: photo.description, wowFactor: photo.wow_factor }
+        { space: photo.space, description: photo.description, wowFactor: photo.wow_factor, customDescription: customDesc }
       );
       setEntries(prev => ({
         ...prev,
@@ -416,7 +543,6 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     const empty = (orderedPhotos || []).filter(p => !entries[p.photoId]?.prompt?.trim());
     if (empty.length === 0) return;
     setGeneratingAll(true);
-    // Process in batches of 3 concurrent
     const BATCH = 3;
     for (let i = 0; i < empty.length; i += BATCH) {
       const batch = empty.slice(i, i + BATCH);
@@ -433,11 +559,8 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
           }));
           setDirty(true);
           setSaved(false);
-        } catch (_) {
-          // Skip failed; user can retry individually
-        } finally {
-          setGenerating(prev => ({ ...prev, [photo.photoId]: false }));
-        }
+        } catch (_) {}
+        finally { setGenerating(prev => ({ ...prev, [photo.photoId]: false })); }
       }));
     }
     setGeneratingAll(false);
@@ -448,19 +571,13 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     try {
       await client.patch(`/properties/${propertyId}/pipeline/step6_kling`, {
         status: 'in_progress',
-        meta: {
-          klingPrompts: entries,
-          savedAt: new Date().toISOString(),
-        },
+        meta: { klingPrompts: entries, savedAt: new Date().toISOString() },
       });
       setSaved(true);
       setDirty(false);
       onSaved?.();
-    } catch {
-      alert('Error al guardar prompts. Intenta de nuevo.');
-    } finally {
-      setSaving(false);
-    }
+    } catch { alert('Error al guardar prompts. Intenta de nuevo.'); }
+    finally { setSaving(false); }
   }
 
   async function handleContinue() {
@@ -468,24 +585,17 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
     try {
       await client.patch(`/properties/${propertyId}/pipeline/step6_kling`, {
         status: 'done',
-        meta: {
-          klingPrompts: entries,
-          completedAt: new Date().toISOString(),
-        },
+        meta: { klingPrompts: entries, completedAt: new Date().toISOString() },
       });
       onSaved?.();
       onContinue?.();
-    } catch {
-      alert('Error al guardar. Intenta de nuevo.');
-    } finally {
-      setSaving(false);
-    }
+    } catch { alert('Error al guardar. Intenta de nuevo.'); }
+    finally { setSaving(false); }
   }
 
-  // Stats
-  const emptyCount = (orderedPhotos || []).filter(p => !entries[p.photoId]?.prompt?.trim()).length;
-  const total     = (orderedPhotos || []).length;
-  const readyCount = (orderedPhotos || []).filter(p => {
+  const emptyCount  = (orderedPhotos || []).filter(p => !entries[p.photoId]?.prompt?.trim()).length;
+  const total       = (orderedPhotos || []).length;
+  const readyCount  = (orderedPhotos || []).filter(p => {
     const e = entries[p.photoId];
     if (!e?.prompt) return false;
     const c = validatePrompt(e.prompt, e.movement);
@@ -496,10 +606,7 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
   function copyAllPrompts() {
     const text = (orderedPhotos || []).map((photo, idx) => {
       const e = entries[photo.photoId] || {};
-      return [
-        `--- FOTO ${idx + 1}: ${photo.space?.replace(/_/g, ' ').toUpperCase()} ---`,
-        buildCopyText(photo, e.prompt || '', e.movement || ''),
-      ].join('\n');
+      return [`--- FOTO ${idx + 1}: ${photo.space?.replace(/_/g, ' ').toUpperCase()} ---`, buildCopyText(photo, e.prompt || '', e.movement || '')].join('\n');
     }).join('\n\n');
     navigator.clipboard.writeText(text);
   }
@@ -507,18 +614,14 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
   return (
     <div className="space-y-5">
 
-      {/* ── Header ──────────────────────────────────────────── */}
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-900 rounded-2xl p-5">
         <div>
           <h2 className="text-white font-semibold text-base">
             Prompts Kling 3.0
-            <span className="ml-2 text-sm font-normal text-gray-400">
-              {readyCount}/{total} listos
-            </span>
+            <span className="ml-2 text-sm font-normal text-gray-400">{readyCount}/{total} listos</span>
           </h2>
-          <p className="text-gray-500 text-sm mt-0.5">
-            Edita, valida y copia cada prompt · Configuración global: Multi-shot OFF · 3s · 9:16 1080p
-          </p>
+          <p className="text-gray-500 text-sm mt-0.5">Edita, valida y copia cada prompt · Multi-shot OFF · 3s · 9:16 1080p</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {emptyCount > 0 && (
@@ -528,22 +631,11 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
               className="flex items-center gap-1.5 px-3 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-colors"
             >
               {generatingAll ? (
-                <>
-                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                  </svg>
-                  Generando {emptyCount}…
-                </>
-              ) : (
-                <>✨ Generar {emptyCount} vacío{emptyCount > 1 ? 's' : ''}</>
-              )}
+                <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Generando {emptyCount}…</>
+              ) : <>✨ Generar {emptyCount} vacío{emptyCount > 1 ? 's' : ''}</>}
             </button>
           )}
-          <button
-            onClick={copyAllPrompts}
-            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium rounded-lg transition-colors"
-          >
+          <button onClick={copyAllPrompts} className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium rounded-lg transition-colors">
             📋 Copiar todos
           </button>
           <button
@@ -551,33 +643,22 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
             disabled={saving || (!dirty && saved)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors"
           >
-            {saving ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                </svg>
-                Guardando…
-              </>
-            ) : saved && !dirty ? '✓ Guardado' : 'Guardar prompts'}
+            {saving ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>Guardando…</> : saved && !dirty ? '✓ Guardado' : 'Guardar prompts'}
           </button>
         </div>
       </div>
 
-      {/* ── Progress bar ────────────────────────────────────── */}
+      {/* Progress bar */}
       {total > 0 && (
         <div className="flex items-center gap-3">
           <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-green-500 rounded-full transition-all duration-500"
-              style={{ width: `${(readyCount / total) * 100}%` }}
-            />
+            <div className="h-full bg-green-500 rounded-full transition-all duration-500" style={{ width: `${(readyCount / total) * 100}%` }} />
           </div>
           <span className="text-xs text-gray-500 shrink-0">{readyCount}/{total} válidos</span>
         </div>
       )}
 
-      {/* ── Photo list ──────────────────────────────────────── */}
+      {/* Photo list */}
       <div className="space-y-3">
         {(orderedPhotos || []).map((photo, idx) => (
           <PhotoPromptRow
@@ -588,7 +669,7 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
             entry={entries[photo.photoId] || { prompt: '', movement: 'slow_zoom_in', endFramePhotoId: null }}
             onChange={updates => handleChange(photo.photoId, updates)}
             isGenerating={!!generating[photo.photoId]}
-            onGenerate={() => handleGenerateSingle(photo)}
+            onGenerate={customDesc => handleGenerateSingle(photo, customDesc)}
             onDelete={onDeletePhoto}
             otherPhotos={(orderedPhotos || []).filter(p => p.photoId !== photo.photoId)}
             thumbMap={thumbMap}
@@ -596,39 +677,29 @@ export default function KlingPrompts({ propertyId, orderedPhotos, expandedPhotos
         ))}
       </div>
 
-      {/* ── Bottom CTAs ─────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row gap-3">
-
-        {/* Generate in Higgsfield — Step 7 */}
-        <div className="flex-1 flex items-center justify-between bg-gray-900 rounded-2xl p-5">
-          <div>
-            <p className="text-white font-medium">Generar clips en Higgsfield</p>
-            <p className="text-gray-500 text-sm mt-0.5">
-              Higgsfield AI (Kling v3.0 Pro) genera un clip de 5s por foto en orden de secuencia.
-            </p>
-          </div>
-          <button
-            onClick={onContinue}
-            disabled={saving}
-            className="flex items-center gap-2 px-5 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors shrink-0"
-          >
-            → Generar en Higgsfield
-          </button>
+      {/* Bottom CTA */}
+      <div className="flex-1 flex items-center justify-between bg-gray-900 rounded-2xl p-5">
+        <div>
+          <p className="text-white font-medium">Generar clips en Higgsfield</p>
+          <p className="text-gray-500 text-sm mt-0.5">Higgsfield AI (Kling v3.0 Pro) genera un clip de 5s por foto en orden de secuencia.</p>
         </div>
+        <button
+          onClick={onContinue}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold rounded-xl text-sm transition-colors shrink-0"
+        >
+          → Generar en Higgsfield
+        </button>
       </div>
 
-      {/* Continue CTA — shows when all prompts ready */}
+      {/* All-ready CTA */}
       {(allReady || readyCount >= Math.ceil(total * 0.8)) && (
         <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-2xl p-5">
           <div>
             <p className="text-green-400 font-semibold">
-              {allReady
-                ? `Todos los prompts validados (${total}/${total})`
-                : `${readyCount} de ${total} prompts listos (${Math.round((readyCount/total)*100)}%)`}
+              {allReady ? `Todos los prompts validados (${total}/${total})` : `${readyCount} de ${total} prompts listos (${Math.round((readyCount/total)*100)}%)`}
             </p>
-            <p className="text-gray-400 text-sm mt-0.5">
-              Listo para continuar al paso de generación de video.
-            </p>
+            <p className="text-gray-400 text-sm mt-0.5">Listo para continuar al paso de generación de video.</p>
           </div>
           <button
             onClick={handleContinue}
