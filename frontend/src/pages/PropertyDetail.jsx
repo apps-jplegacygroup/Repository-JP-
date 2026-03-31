@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import client from '../api/client';
+import JSZip from 'jszip';
 import PipelineStatus from '../components/PipelineStatus.jsx';
 import PhotoUploader from '../components/PhotoUploader.jsx';
 import PhotoGrid from '../components/PhotoGrid.jsx';
@@ -25,6 +26,8 @@ export default function PropertyDetail() {
   const [uploadMode, setUploadMode] = useState('manual'); // 'manual' | 'dropbox'
   const [dropboxLink, setDropboxLink] = useState('');
   const [importing, setImporting] = useState(false);
+  const [downloadingExpanded, setDownloadingExpanded] = useState(false);
+  const [downloadExpandedPct, setDownloadExpandedPct] = useState(0);
 
 
   // Load property
@@ -203,6 +206,52 @@ export default function PropertyDetail() {
       navigate('/');
     } catch {
       alert('Failed to delete property.');
+    }
+  }
+
+  async function handleDownloadExpandedZip() {
+    setDownloadingExpanded(true);
+    setDownloadExpandedPct(0);
+    try {
+      const { data } = await client.get(`/properties/${id}/photos/expanded-download-links`);
+      const links = (data.links || []).filter(l => l.url);
+      if (links.length === 0) { alert('No hay fotos expandidas para descargar.'); return; }
+      const zip = new JSZip();
+      for (let i = 0; i < links.length; i++) {
+        const { name, url } = links[i];
+        const res = await fetch(url);
+        const buf = await res.arrayBuffer();
+        const ext  = name.includes('.') ? '' : '.jpg';
+        zip.file(`${String(i + 1).padStart(2, '0')}_${name}${ext}`, buf);
+        setDownloadExpandedPct(Math.round(((i + 1) / links.length) * 100));
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `expandidas_${id.slice(0, 8)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Error al descargar expandidas: ' + err.message);
+    } finally {
+      setDownloadingExpanded(false);
+      setDownloadExpandedPct(0);
+    }
+  }
+
+  async function handleDeleteFromSequence(photoId) {
+    const step5 = property?.pipeline?.step5_sequence || {};
+    const currentOrdered = step5.meta?.orderedPhotos || [];
+    const newOrdered = currentOrdered.filter(p => p.photoId !== photoId);
+    try {
+      await client.patch(`/properties/${id}/pipeline/step5_sequence`, {
+        status: step5.status || 'in_progress',
+        meta: { ...step5.meta, orderedPhotos: newOrdered },
+      });
+      await handleRefresh();
+    } catch {
+      alert('Error al eliminar la foto de la secuencia');
     }
   }
 
@@ -577,12 +626,23 @@ export default function PropertyDetail() {
             {/* Done — show expanded photos */}
             {hasExpand && (
               <>
-                <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
-                  <p className="text-green-400 font-medium">
-                    {expandMeta.expandedPhotos.length} photos expanded to 9:16 ✓
-                  </p>
-                  {expandMeta.errors?.length > 0 && (
-                    <p className="text-amber-400 text-sm mt-1">{expandMeta.errors.length} photos failed to expand</p>
+                <div className="flex items-center justify-between bg-green-500/10 border border-green-500/30 rounded-xl p-4 gap-4">
+                  <div>
+                    <p className="text-green-400 font-medium">
+                      {expandMeta.expandedPhotos.length} photos expanded to 9:16 ✓
+                    </p>
+                    {expandMeta.errors?.length > 0 && (
+                      <p className="text-amber-400 text-sm mt-1">{expandMeta.errors.length} photos failed to expand</p>
+                    )}
+                  </div>
+                  {user?.role === 'admin' && (
+                    <button
+                      onClick={handleDownloadExpandedZip}
+                      disabled={downloadingExpanded}
+                      className="shrink-0 flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-gray-200 text-sm font-semibold rounded-xl transition-colors"
+                    >
+                      {downloadingExpanded ? `⏳ ${downloadExpandedPct}%` : '⬇ Descargar expandidas'}
+                    </button>
                   )}
                 </div>
 
@@ -717,6 +777,7 @@ export default function PropertyDetail() {
               step6={step6}
               onSaved={handleRefresh}
               onContinue={() => setActiveTab('higgsfield')}
+              onDeletePhoto={handleDeleteFromSequence}
             />
           );
         })()}
