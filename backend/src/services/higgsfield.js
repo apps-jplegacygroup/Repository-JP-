@@ -27,7 +27,12 @@ async function submitClip(imageUrl, prompt, duration = 5, endFrameImageUrl = nul
   let lastErr;
 
   const payload = { image_url: imageUrl, prompt, duration };
-  if (endFrameImageUrl) payload.end_frame_image_url = endFrameImageUrl;
+  if (endFrameImageUrl) payload.image_tail_url = endFrameImageUrl;
+
+  // Log what we're sending so connected-scene issues are easy to diagnose
+  console.log(`[higgsfield] submit payload keys: ${Object.keys(payload).join(', ')}`);
+  console.log(`[higgsfield] start_frame: ${imageUrl.slice(0, 80)}…`);
+  if (endFrameImageUrl) console.log(`[higgsfield] end_frame (image_tail_url): ${endFrameImageUrl.slice(0, 80)}…`);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const res = await fetch(`${BASE_URL}/${MODEL}`, {
@@ -44,6 +49,7 @@ async function submitClip(imageUrl, prompt, duration = 5, endFrameImageUrl = nul
     if (res.ok) return res.json(); // { status, request_id, status_url, cancel_url }
 
     const text = await res.text();
+    console.error(`[higgsfield] submit failed (${res.status}): ${text.slice(0, 500)}`);
     lastErr = new HiggsfieldError(res.status, text);
 
     if (lastErr.isRetryable && attempt < MAX_ATTEMPTS) {

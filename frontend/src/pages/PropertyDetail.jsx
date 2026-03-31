@@ -28,6 +28,10 @@ export default function PropertyDetail() {
   const [importing, setImporting] = useState(false);
   const [downloadingExpanded, setDownloadingExpanded] = useState(false);
   const [downloadExpandedPct, setDownloadExpandedPct] = useState(0);
+  const [objectRemovalModal, setObjectRemovalModal] = useState(null); // { photoId, name, thumbUrl }
+  const [objectRemovalDesc, setObjectRemovalDesc] = useState('');
+  const [objectRemoving, setObjectRemoving] = useState(false);
+  const [objectRemovalError, setObjectRemovalError] = useState(null);
 
 
   // Load property
@@ -240,6 +244,24 @@ export default function PropertyDetail() {
     }
   }
 
+  async function handleObjectRemoval() {
+    if (!objectRemovalModal || !objectRemovalDesc.trim()) return;
+    setObjectRemoving(true);
+    setObjectRemovalError(null);
+    try {
+      await client.post(`/properties/${id}/photos/remove-object/${objectRemovalModal.photoId}`, {
+        description: objectRemovalDesc.trim(),
+      });
+      setObjectRemovalModal(null);
+      setObjectRemovalDesc('');
+      await handleRefresh();
+    } catch (err) {
+      setObjectRemovalError(err.response?.data?.error || 'Error al eliminar el objeto');
+    } finally {
+      setObjectRemoving(false);
+    }
+  }
+
   async function handleDeleteFromSequence(photoId) {
     const step5 = property?.pipeline?.step5_sequence || {};
     const currentOrdered = step5.meta?.orderedPhotos || [];
@@ -268,6 +290,78 @@ export default function PropertyDetail() {
 
   return (
     <div className="min-h-screen bg-gray-950">
+      {/* ── Object Removal Modal ──────────────────────────────── */}
+      {objectRemovalModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+          onClick={() => { if (!objectRemoving) { setObjectRemovalModal(null); setObjectRemovalDesc(''); setObjectRemovalError(null); } }}
+        >
+          <div
+            className="bg-gray-900 rounded-2xl p-6 w-full max-w-sm space-y-4 ring-1 ring-gray-700"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <p className="text-white font-semibold">Eliminar objeto</p>
+              {!objectRemoving && (
+                <button
+                  onClick={() => { setObjectRemovalModal(null); setObjectRemovalDesc(''); setObjectRemovalError(null); }}
+                  className="text-gray-500 hover:text-gray-300 text-lg leading-none"
+                >✕</button>
+              )}
+            </div>
+
+            {/* Preview */}
+            <div className="aspect-[9/16] rounded-xl overflow-hidden bg-gray-800 relative max-h-48 mx-auto" style={{ maxWidth: '110px' }}>
+              <img src={objectRemovalModal.thumbUrl} alt={objectRemovalModal.name} className="w-full h-full object-cover" />
+              {objectRemoving && (
+                <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-amber-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                </div>
+              )}
+            </div>
+
+            {/* Description input */}
+            <div className="space-y-1.5">
+              <label className="text-gray-400 text-xs font-medium">¿Qué quieres eliminar?</label>
+              <input
+                type="text"
+                value={objectRemovalDesc}
+                onChange={e => setObjectRemovalDesc(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !objectRemoving) handleObjectRemoval(); }}
+                disabled={objectRemoving}
+                placeholder="ej: el letrero de No Parking, el carro rojo…"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                autoFocus
+              />
+              <p className="text-gray-600 text-[10px]">Puedes escribir en español. Stability AI lo procesará.</p>
+            </div>
+
+            {objectRemovalError && (
+              <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{objectRemovalError}</p>
+            )}
+
+            <button
+              onClick={handleObjectRemoval}
+              disabled={objectRemoving || !objectRemovalDesc.trim()}
+              className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+            >
+              {objectRemoving ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                  Eliminando objeto… (~20s)
+                </>
+              ) : 'Eliminar objeto'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-gray-800 bg-gray-900">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-4">
@@ -646,16 +740,40 @@ export default function PropertyDetail() {
                   )}
                 </div>
 
-                {/* Expanded photo thumbnails */}
+                {/* Expanded photo thumbnails with edit button */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                   {expandMeta.expandedPhotos.map((ep) => (
-                    <div key={ep.id} className="bg-gray-800 rounded-xl overflow-hidden aspect-[9/16]">
-                      <img
-                        src={ep.thumbnailUrl}
-                        alt={ep.name}
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
+                    <div key={ep.id} className="bg-gray-800 rounded-xl overflow-hidden flex flex-col">
+                      <div className="aspect-[9/16] relative">
+                        <img
+                          src={ep.thumbnailUrl}
+                          alt={ep.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        {ep.objectRemovedAt && (
+                          <div className="absolute top-1.5 left-1/2 -translate-x-1/2 bg-green-500/90 text-white text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap">
+                            ✓ Objeto eliminado
+                          </div>
+                        )}
+                        {ep.manuallyReplaced && (
+                          <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-amber-500/90 text-white text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap">
+                            ↑ Reemplazada
+                          </div>
+                        )}
+                      </div>
+                      {user?.role === 'admin' && (
+                        <button
+                          onClick={() => {
+                            setObjectRemovalModal({ photoId: ep.id, name: ep.name, thumbUrl: ep.thumbnailUrl });
+                            setObjectRemovalDesc('');
+                            setObjectRemovalError(null);
+                          }}
+                          className="py-1.5 text-[10px] font-semibold text-gray-400 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                        >
+                          ✏ Editar foto
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
