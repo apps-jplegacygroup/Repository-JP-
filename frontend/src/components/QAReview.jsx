@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import client from '../api/client';
 
 const QUALITY_CHECKS = [
@@ -29,11 +29,12 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
     for (const photo of selected) {
       const saved = savedDecisions[photo.photoId] || {};
       init[photo.photoId] = {
-        status:        saved.status        || 'pending',   // 'pending' | 'approved' | 'rejected'
-        customPrompt:  saved.customPrompt  || photo.firefly_prompt || '',
-        checks:        saved.checks        || { continuidad: true, colores: true, artefactos: true },
-        reexpanding:   saved.reexpanding   || false,
-        reexpandError: saved.reexpandError || null,
+        status:           saved.status           || 'pending',
+        customPrompt:     saved.customPrompt     || photo.firefly_prompt || '',
+        checks:           saved.checks           || { continuidad: true, colores: true, artefactos: true },
+        reexpanding:      saved.reexpanding      || false,
+        reexpandError:    saved.reexpandError    || null,
+        manuallyReplaced: saved.manuallyReplaced || false,
       };
     }
     return init;
@@ -43,7 +44,10 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
   const [saveOk, setSaveOk] = useState(false);
   const [deletedIds, setDeletedIds] = useState(new Set());
   const [deletingIds, setDeletingIds] = useState(new Set());
+  const [replacingIds, setReplacingIds] = useState(new Set());
   const pollRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const pendingReplaceIdRef = useRef(null);
 
   // Sync external step4 decisions (after reexpand completes via polling)
   useEffect(() => {
@@ -52,11 +56,12 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
       const next = { ...prev };
       for (const [pid, d] of Object.entries(ext)) {
         if (next[pid]) {
-          // Only update reexpanding / reexpandError from server; keep local status/prompt/checks
+          // Only update server-driven fields; keep local status/prompt/checks
           next[pid] = {
             ...next[pid],
-            reexpanding:   d.reexpanding   ?? next[pid].reexpanding,
-            reexpandError: d.reexpandError ?? next[pid].reexpandError,
+            reexpanding:      d.reexpanding      ?? next[pid].reexpanding,
+            reexpandError:    d.reexpandError    ?? next[pid].reexpandError,
+            manuallyReplaced: d.manuallyReplaced ?? next[pid].manuallyReplaced,
           };
         }
       }
@@ -145,15 +150,33 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
     }
   }
 
+  async function handleReplacePhoto(photoId, file) {
+    setReplacingIds(prev => new Set(prev).add(photoId));
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+      await client.post(`/properties/${propertyId}/photos/replace-expanded/${photoId}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setDecision(photoId, { status: 'approved', manuallyReplaced: true });
+      await onRefresh?.();
+    } catch (err) {
+      alert(err.response?.data?.error || 'Error al subir la foto corregida');
+    } finally {
+      setReplacingIds(prev => { const next = new Set(prev); next.delete(photoId); return next; });
+    }
+  }
+
   async function persistDecisions(dec, showOk = true) {
     const toSave = {};
     for (const [pid, d] of Object.entries(dec)) {
       toSave[pid] = {
-        status:        d.status,
-        customPrompt:  d.customPrompt,
-        checks:        d.checks,
-        reexpanding:   d.reexpanding,
-        reexpandError: d.reexpandError,
+        status:           d.status,
+        customPrompt:     d.customPrompt,
+        checks:           d.checks,
+        reexpanding:      d.reexpanding,
+        reexpandError:    d.reexpandError,
+        manuallyReplaced: d.manuallyReplaced || false,
       };
     }
     const approved = activeSelected.filter(p => dec[p.photoId]?.status === 'approved');
@@ -211,6 +234,22 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
 
   return (
     <div className="space-y-6">
+      {/* Hidden file input for manual photo replacement */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={e => {
+          const file = e.target.files?.[0];
+          if (file && pendingReplaceIdRef.current) {
+            handleReplacePhoto(pendingReplaceIdRef.current, file);
+            pendingReplaceIdRef.current = null;
+          }
+          e.target.value = '';
+        }}
+      />
+
       {/* ── Stats bar ──────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-gray-900 rounded-2xl p-5">
         <div className="flex flex-wrap gap-4 text-sm">
@@ -246,10 +285,11 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
       {/* ── Photo grid ─────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
         {selected.filter(p => !deletedIds.has(p.photoId)).map(photo => {
-          const d         = decisions[photo.photoId] || {};
-          const isApproved = d.status === 'approved';
-          const isRejected = d.status === 'rejected';
-          const thumbUrl  = thumbMap[photo.photoId];
+          const d               = decisions[photo.photoId] || {};
+          const isApproved       = d.status === 'approved';
+          const isRejected       = d.status === 'rejected';
+          const isReplacing      = replacingIds.has(photo.photoId);
+          const thumbUrl         = thumbMap[photo.photoId];
 
           return (
             <div
@@ -291,6 +331,13 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                     <p className="text-white text-xs font-medium">Re-expandiendo…</p>
                   </div>
                 )}
+                {/* Uploading replacement overlay */}
+                {isReplacing && (
+                  <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2">
+                    <SpinnerIcon className="w-8 h-8 text-amber-400" />
+                    <p className="text-white text-xs font-medium">Subiendo foto…</p>
+                  </div>
+                )}
                 {/* Approved/Rejected overlay badge */}
                 {isApproved && (
                   <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-green-500/90 text-white text-xs font-bold px-3 py-1 rounded-full">
@@ -300,6 +347,12 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                 {isRejected && (
                   <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/90 text-white text-xs font-bold px-3 py-1 rounded-full">
                     ✗ Rechazada
+                  </div>
+                )}
+                {/* Manually replaced badge */}
+                {d.manuallyReplaced && (
+                  <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-amber-500/90 text-white text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap">
+                    ↑ Reemplazada manualmente
                   </div>
                 )}
               </div>
@@ -393,7 +446,7 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                     {/* Re-expand button */}
                     <button
                       onClick={() => handleReexpand(photo)}
-                      disabled={d.reexpanding || d.suggestingPrompt}
+                      disabled={d.reexpanding || d.suggestingPrompt || isReplacing}
                       className="w-full py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {d.reexpanding ? (
@@ -405,6 +458,25 @@ export default function QAReview({ propertyId, selected, expandedPhotos, step4, 
                     {d.reexpandError && (
                       <p className="text-red-400 text-[10px] leading-tight">{d.reexpandError}</p>
                     )}
+
+                    {/* Manual replacement upload */}
+                    <button
+                      onClick={() => {
+                        pendingReplaceIdRef.current = photo.photoId;
+                        fileInputRef.current?.click();
+                      }}
+                      disabled={d.reexpanding || isReplacing}
+                      className="w-full py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[10px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      {isReplacing ? (
+                        <><SpinnerIcon /> Subiendo…</>
+                      ) : (
+                        <>↑ Subir foto corregida</>
+                      )}
+                    </button>
+                    <p className="text-gray-600 text-[9px] leading-tight -mt-1">
+                      Sube una versión corregida ya expandida (9:16) — se aprueba automáticamente.
+                    </p>
                   </div>
                 )}
               </div>

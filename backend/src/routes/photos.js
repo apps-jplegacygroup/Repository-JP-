@@ -741,6 +741,63 @@ async function translatePromptToEnglish(text) {
   }
 }
 
+// POST /api/v1/properties/:id/photos/replace-expanded/:photoId
+// Accepts a manually-corrected expanded photo (already in 9:16 format).
+// Overwrites the existing expandedPath in Dropbox, marks the photo as
+// manually replaced, and auto-approves it in step4_qa decisions.
+router.post('/replace-expanded/:photoId', requireAdmin, upload.single('photo'), async (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const photo = expandedPhotos.find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ error: 'Photo not found in expanded photos' });
+
+  try {
+    // Convert to JPEG (handles PNG, HEIC, etc.) and upload to Dropbox,
+    // overwriting the existing expanded path so the rest of the pipeline is unaffected.
+    const jpegBuffer = await sharp(req.file.buffer).jpeg({ quality: 90 }).toBuffer();
+    await dropbox.uploadFile(jpegBuffer, photo.expandedPath);
+    const thumbnailUrl = await dropbox.getTemporaryLink(photo.expandedPath);
+
+    // Update step2_stability: replace thumbnailUrl + mark manually replaced
+    const updatedExpanded = expandedPhotos.map(ep =>
+      ep.id === photoId
+        ? { ...ep, thumbnailUrl, manuallyReplaced: true, replacedAt: new Date().toISOString() }
+        : ep
+    );
+    const step2Meta = property.pipeline.step2_stability?.meta || {};
+    Property.updatePipelineStep(propertyId, 'step2_stability', {
+      status: property.pipeline.step2_stability?.status || 'done',
+      meta: { ...step2Meta, expandedPhotos: updatedExpanded },
+    });
+
+    // Auto-approve in step4_qa decisions
+    const step4Meta = property.pipeline.step4_qa?.meta || {};
+    const decisions = { ...(step4Meta.decisions || {}) };
+    decisions[photoId] = {
+      ...(decisions[photoId] || {}),
+      status: 'approved',
+      manuallyReplaced: true,
+      replacedAt: new Date().toISOString(),
+    };
+    Property.updatePipelineStep(propertyId, 'step4_qa', {
+      status: property.pipeline.step4_qa?.status || 'in_progress',
+      meta: { ...step4Meta, decisions },
+    });
+
+    console.log(`[replace-expanded] ✓ ${photo.name} manually replaced for property ${propertyId}`);
+    res.json({ ok: true, thumbnailUrl, photoId });
+  } catch (err) {
+    console.error(`[replace-expanded] Error for ${photo?.name}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/v1/properties/:id/photos/reexpand/:photoId
 // Re-expands a single previously-expanded photo with an optional custom prompt.
 // Returns 202 immediately; updates step2_stability + step4_qa in the background.
