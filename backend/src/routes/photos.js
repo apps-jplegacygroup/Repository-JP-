@@ -476,7 +476,7 @@ router.post('/analyze', requireAdmin, (_req, res) => {
 // Synchronous — ~5s, well within Railway 60s timeout.
 router.post('/generate-kling-prompt/:photoId', requireAdmin, async (req, res) => {
   const { id: propertyId, photoId } = req.params;
-  const { space = '', description = '', wowFactor = 5 } = req.body;
+  const { space = '', description = '', wowFactor = 5, customDescription = '' } = req.body;
 
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set' });
@@ -506,6 +506,14 @@ router.post('/generate-kling-prompt/:photoId', requireAdmin, async (req, res) =>
     const spaceCtx = space ? `Space type: ${space.replace(/_/g, ' ')}` : '';
     const descCtx  = description ? `Description: ${description}` : '';
     const wowCtx   = `WOW factor: ${wowFactor}/10`;
+
+    // Translate user's creative direction to English if provided
+    let customCtx = '';
+    if (customDescription && customDescription.trim()) {
+      const englishCustomDesc = await translatePromptToEnglish(customDescription.trim());
+      customCtx = `\nUser's creative direction (HIGHEST PRIORITY — base the camera movement on this): "${englishCustomDesc}"`;
+      console.log(`[generate-kling] custom direction: "${customDescription.trim()}" → "${englishCustomDesc}"`);
+    }
 
     const response = await claudeClient.messages.create({
       model: 'claude-opus-4-5',
@@ -562,7 +570,7 @@ MOVEMENT KEY MAPPING — pick the ONE best key from this list:
 Photo context:
 ${spaceCtx}
 ${descCtx}
-${wowCtx}
+${wowCtx}${customCtx}
 
 Respond ONLY with a raw JSON object, no markdown, no explanation:
 {
