@@ -6,7 +6,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const Property = require('../models/property');
 const dropbox = require('../services/dropbox');
 const { analyzeAllPhotos } = require('../services/claude');
-const { expandPhoto, StabilityError } = require('../services/stability');
+const { expandPhoto, removeObject, StabilityError } = require('../services/stability');
 const { submitClip, pollClip }        = require('../services/higgsfield');
 
 const router = express.Router({ mergeParams: true });
@@ -740,6 +740,62 @@ async function translatePromptToEnglish(text) {
     return text; // fallback: use original rather than fail
   }
 }
+
+// POST /api/v1/properties/:id/photos/remove-object/:photoId
+// Removes a described object from an expanded photo using Stability AI Search and Replace.
+// Body: { description: "el letrero de No Parking" }
+// Synchronous — typically 10-30s, within Railway 60s timeout.
+router.post('/remove-object/:photoId', requireAdmin, async (req, res) => {
+  const { id: propertyId, photoId } = req.params;
+  const { description = '' } = req.body;
+
+  if (!description.trim()) return res.status(400).json({ error: 'description is required' });
+
+  if (!process.env.STABILITY_API_KEY) {
+    return res.status(500).json({ error: 'STABILITY_API_KEY is not set' });
+  }
+
+  const property = Property.getById(propertyId);
+  if (!property) return res.status(404).json({ error: 'Property not found' });
+
+  const expandedPhotos = property.pipeline.step2_stability?.meta?.expandedPhotos || [];
+  const photo = expandedPhotos.find(p => p.id === photoId);
+  if (!photo) return res.status(404).json({ error: 'Photo not found in expanded photos' });
+
+  try {
+    const axios = require('axios');
+    console.log(`[remove-object] Starting for ${photo.name}: "${description}"`);
+
+    // Download the expanded photo from Dropbox
+    const link   = await dropbox.getTemporaryLink(photo.expandedPath);
+    const imgRes = await axios.get(link, { responseType: 'arraybuffer', timeout: 30000 });
+
+    // Run object removal via Stability AI
+    const resultBuffer = await removeObject(Buffer.from(imgRes.data), description.trim());
+
+    // Upload result back to same Dropbox path (overwrites expanded photo)
+    await dropbox.uploadFile(resultBuffer, photo.expandedPath);
+    const thumbnailUrl = await dropbox.getTemporaryLink(photo.expandedPath);
+
+    // Update step2_stability meta
+    const updatedExpanded = expandedPhotos.map(ep =>
+      ep.id === photoId
+        ? { ...ep, thumbnailUrl, objectRemovedAt: new Date().toISOString(), objectRemovedDesc: description.trim() }
+        : ep
+    );
+    const step2Meta = property.pipeline.step2_stability?.meta || {};
+    Property.updatePipelineStep(propertyId, 'step2_stability', {
+      status: property.pipeline.step2_stability?.status || 'done',
+      meta: { ...step2Meta, expandedPhotos: updatedExpanded },
+    });
+
+    console.log(`[remove-object] ✓ ${photo.name}: "${description}"`);
+    res.json({ ok: true, thumbnailUrl, photoId });
+  } catch (err) {
+    console.error(`[remove-object] ✗ ${photo?.name}: ${err.message}`);
+    res.status(err.isCreditsError ? 402 : 500).json({ error: err.message });
+  }
+});
 
 // POST /api/v1/properties/:id/photos/replace-expanded/:photoId
 // Accepts a manually-corrected expanded photo (already in 9:16 format).
