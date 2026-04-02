@@ -88,14 +88,7 @@ router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, re
 
   for (const file of req.files) {
     try {
-      // Validate resolution
       const meta = await sharp(file.buffer).metadata();
-      const minDim = 800;
-      const shortestSide = Math.min(meta.width, meta.height);
-      const lowRes = shortestSide < minDim;
-      if (lowRes) {
-        console.warn(`[upload] ${file.originalname}: width=${meta.width} height=${meta.height} (below minimum ${minDim}px on shortest side — importing with warning)`);
-      }
 
       const photoId = uuidv4();
       const ext = file.originalname.split('.').pop().toLowerCase() || 'jpg';
@@ -114,7 +107,6 @@ router.post('/upload', requireAdmin, upload.array('photos', 100), async (req, re
         size: file.size,
         mediaType: file.mimetype,
         uploadedAt: new Date().toISOString(),
-        ...(lowRes && { lowResWarning: true }),
       });
     } catch (err) {
       errors.push({ name: file.originalname, error: err.message });
@@ -210,18 +202,13 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
           const buffer = await dropbox.downloadSharedFile(sharedLink, `/${entry.name}`);
 
           const meta = await sharp(buffer).metadata();
-          const minDim = 800;
-          const shortestSide = Math.min(meta.width, meta.height);
-          const lowRes = shortestSide < minDim;
-          if (lowRes) {
-            console.warn(`[import-dropbox] skipped ${entry.name}: width=${meta.width} height=${meta.height} (below minimum ${minDim}px on shortest side — importing with warning)`);
-          }
+          console.log(`[import-dropbox] ${entry.name}: width=${meta.width} height=${meta.height}`);
           const photoId = uuidv4();
           const ext = entry.name.split('.').pop().toLowerCase() || 'jpg';
           const dropboxPath = `${paths.raw}/${photoId}.${ext}`;
           await dropbox.uploadFile(buffer, dropboxPath);
           const thumbnailUrl = await dropbox.getTemporaryLink(dropboxPath);
-          console.log(`[import-dropbox] ✓ ${entry.name}${lowRes ? ' (low-res warning)' : ''}`);
+          console.log(`[import-dropbox] ✓ ${entry.name}`);
           return {
             id: photoId,
             name: entry.name,
@@ -232,7 +219,6 @@ router.post('/import-dropbox', requireAdmin, async (req, res) => {
             size: entry.size,
             mediaType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
             uploadedAt: new Date().toISOString(),
-            ...(lowRes && { lowResWarning: true }),
           };
         }));
 
