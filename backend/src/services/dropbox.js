@@ -3,6 +3,15 @@ const axios = require('axios');
 const CONTENT_API = 'https://content.dropboxapi.com/2';
 const API         = 'https://api.dropboxapi.com/2';
 
+// Serialize an object to a JSON string that is safe to use as an HTTP header
+// value. Characters outside printable ASCII (0x21–0x7e) — including spaces
+// and any non-ASCII codepoints — are escaped as \uXXXX so Node.js's HTTP
+// layer never sees them. Dropbox parses the Unicode escapes correctly.
+function dropboxArg(obj) {
+  return JSON.stringify(obj).replace(/[^\x21-\x7e]/g,
+    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 // ── Token management ─────────────────────────────────────────────────────────
 // Uses DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET.
 // Falls back to static DROPBOX_TOKEN if refresh vars are not set.
@@ -204,7 +213,7 @@ async function downloadSharedFile(sharedLink, filePath) {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'text/plain',
-        'Dropbox-API-Arg': JSON.stringify({ url: sharedLink, path: filePath }),
+        'Dropbox-API-Arg': dropboxArg({ url: sharedLink, path: filePath }),
       },
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
