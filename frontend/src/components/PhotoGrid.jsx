@@ -54,6 +54,13 @@ function SortablePhoto({ photo, idx, onDelete }) {
         {photo.width}×{photo.height}
       </div>
 
+      {/* Low-res warning badge */}
+      {photo.lowResWarning && (
+        <div className="absolute top-7 left-1 bg-amber-500/90 text-white text-[9px] font-bold px-1 py-0.5 rounded pointer-events-none leading-none">
+          BAJA RES
+        </div>
+      )}
+
       {/* Delete button */}
       {onDelete && (
         <button
