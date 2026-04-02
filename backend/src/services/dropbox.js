@@ -107,7 +107,7 @@ async function uploadFile(buffer, dropboxPath) {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/octet-stream',
-        'Dropbox-API-Arg': JSON.stringify({
+        'Dropbox-API-Arg': dropboxArg({
           path: dropboxPath,
           mode: { '.tag': 'overwrite' },
           autorename: false,
@@ -276,7 +276,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/octet-stream',
-          'Dropbox-API-Arg': JSON.stringify({ close: total <= CHUNK }),
+          'Dropbox-API-Arg': dropboxArg({ close: total <= CHUNK }),
         },
         maxBodyLength: Infinity,
       }
@@ -293,7 +293,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/octet-stream',
-            'Dropbox-API-Arg': JSON.stringify({
+            'Dropbox-API-Arg': dropboxArg({
               cursor: { session_id: sessionId, offset: Math.min(CHUNK, total) },
               commit: { path: dropboxPath, mode: { '.tag': 'overwrite' }, autorename: false, mute: true },
             }),
@@ -320,7 +320,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
             headers: {
               Authorization: `Bearer ${token}`,
               'Content-Type': 'application/octet-stream',
-              'Dropbox-API-Arg': JSON.stringify({ cursor: { session_id: sessionId, offset }, close: false }),
+              'Dropbox-API-Arg': dropboxArg({ cursor: { session_id: sessionId, offset }, close: false }),
             },
             maxBodyLength: Infinity,
           }
@@ -337,7 +337,7 @@ async function uploadLargeFile(buffer, dropboxPath, chunkSizeMB = 100) {
             headers: {
               Authorization: `Bearer ${token}`,
               'Content-Type': 'application/octet-stream',
-              'Dropbox-API-Arg': JSON.stringify({
+              'Dropbox-API-Arg': dropboxArg({
                 cursor: { session_id: sessionId, offset },
                 commit: { path: dropboxPath, mode: { '.tag': 'overwrite' }, autorename: false, mute: true },
               }),
