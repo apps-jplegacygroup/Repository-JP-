@@ -119,7 +119,7 @@ function DragCard({ photo, thumbUrl }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function SequenceEditor({ propertyId, initialPhotos, expandedPhotos, step5, onSaved, onContinue }) {
+export default function SequenceEditor({ propertyId, initialPhotos, expandedPhotos, step5, onSaved }) {
   // Build thumbMap
   const thumbMap = {};
   for (const ep of expandedPhotos || []) thumbMap[ep.id] = ep.thumbnailUrl;
@@ -277,21 +277,51 @@ export default function SequenceEditor({ propertyId, initialPhotos, expandedPhot
         </DragOverlay>
       </DndContext>
 
-      {/* ── Generate Kling prompts CTA ──────────────────────── */}
+      {/* ── Pipeline completado ──────────────────────────────── */}
       {saved && !dirty && (
-        <div className="flex items-center justify-between bg-gray-900 rounded-2xl p-5">
-          <div>
-            <p className="text-white font-medium">Secuencia guardada ✓</p>
-            <p className="text-gray-500 text-sm mt-0.5">
-              Claude ya generó prompts de movimiento para cada foto. Edítalos y cópialos en Higgsfield.
-            </p>
+        <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">✅</span>
+            <div>
+              <p className="text-green-400 font-semibold">Pipeline completado</p>
+              <p className="text-gray-400 text-sm mt-0.5">
+                {photos.length} fotos en secuencia final. Exporta o copia la lista para usarla en producción.
+              </p>
+            </div>
           </div>
-          <button
-            onClick={onContinue}
-            className="flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-white font-semibold rounded-xl text-sm transition-colors"
-          >
-            → Generar prompts Kling
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => {
+                const text = photos.map((p, i) =>
+                  `${i + 1}. ${p.name || p.photoId}${p.space ? ` (${p.space.replace(/_/g, ' ')})` : ''}`
+                ).join('\n');
+                navigator.clipboard.writeText(text).then(() => alert('Secuencia copiada al portapapeles ✓'));
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              📋 Copiar secuencia
+            </button>
+            <button
+              onClick={() => {
+                const data = photos.map((p, i) => ({
+                  order: i + 1,
+                  name: p.name || p.photoId,
+                  space: p.space || null,
+                  wow_factor: p.wow_factor ?? null,
+                }));
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href     = url;
+                a.download = `secuencia_${propertyId.slice(0, 8)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-semibold rounded-xl transition-colors"
+            >
+              ⬇ Exportar secuencia
+            </button>
+          </div>
         </div>
       )}
     </div>

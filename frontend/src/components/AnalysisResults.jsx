@@ -69,16 +69,14 @@ export default function AnalysisResults({ selected, all }) {
               </div>
 
               {/* Prompts */}
-              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="bg-gray-900 rounded-lg p-3">
-                  <p className="text-xs text-amber-400 font-medium mb-1">Kling Movement: <span className="text-gray-400 font-normal">{photo.kling_movement}</span></p>
-                  <p className="text-gray-300 text-xs leading-relaxed">{photo.kling_prompt}</p>
+              {photo.firefly_prompt && (
+                <div className="mt-3">
+                  <div className="bg-gray-900 rounded-lg p-3">
+                    <p className="text-xs text-blue-400 font-medium mb-1">Firefly Expand Prompt</p>
+                    <p className="text-gray-300 text-xs leading-relaxed">{photo.firefly_prompt}</p>
+                  </div>
                 </div>
-                <div className="bg-gray-900 rounded-lg p-3">
-                  <p className="text-xs text-blue-400 font-medium mb-1">Firefly Expand Prompt</p>
-                  <p className="text-gray-300 text-xs leading-relaxed">{photo.firefly_prompt}</p>
-                </div>
-              </div>
+              )}
 
               {photo.wow_reason && (
                 <p className="text-gray-600 text-xs mt-2 italic">WOW: {photo.wow_reason}</p>

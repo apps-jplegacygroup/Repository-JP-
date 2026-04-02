@@ -1,10 +1,8 @@
 const STEPS = [
-  { key: 'step1_upload',     label: '1 Upload' },
-  { key: 'step2_stability',  label: '2 Expand' },
-  { key: 'step4_qa',         label: '3 QA' },
-  { key: 'step5_sequence',   label: '4 Sequence' },
-  { key: 'step6_kling',      label: '5 Kling' },
-  { key: 'step7_higgsfield', label: '6 Higgsfield' },
+  { key: 'step1_upload',    label: '1 Upload' },
+  { key: 'step2_stability', label: '2 Expand' },
+  { key: 'step4_qa',        label: '3 QA' },
+  { key: 'step5_sequence',  label: '4 Sequence' },
 ];
 
 const STATUS_STYLES = {
