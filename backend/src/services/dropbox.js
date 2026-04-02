@@ -162,17 +162,23 @@ async function listFolder(folderPath) {
   );
 }
 
-// List image files in a shared folder link (e.g. https://www.dropbox.com/sh/xxxx)
+// List image files in a shared folder link (e.g. https://www.dropbox.com/scl/fo/... or /sh/...)
 // Returns array of { name, path_lower, size } entries for image files only
 async function listSharedFolderImages(sharedLink) {
   const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'tiff', 'tif']);
   let entries = [];
   let cursor = null;
 
+  // Strip ?dl=0 / ?dl=1 suffixes — they interfere with the API but are harmless to remove.
+  // Keep rlkey and other params as they may be required for access.
+  const linkUrl = sharedLink.replace(/[?&]dl=[01](&|$)/, '$1').replace(/[?&]$/, '');
+  console.log(`[dropbox] listSharedFolderImages url: ${linkUrl}`);
+
+  // NOTE: do NOT include `recursive` when using shared_link — Dropbox rejects it.
   const firstData = await withRetry401(token =>
     axios.post(
       `${API}/files/list_folder`,
-      { path: '', shared_link: { url: sharedLink }, recursive: false },
+      { shared_link: { url: linkUrl }, path: '' },
       { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
     ).then(r => r.data)
   );
@@ -205,6 +211,7 @@ async function listSharedFolderImages(sharedLink) {
 // the args go in the Dropbox-API-Arg header as a JSON string.
 // filePath: filename with leading slash, e.g. '/photo.jpg'
 async function downloadSharedFile(sharedLink, filePath) {
+  const linkUrl = sharedLink.replace(/[?&]dl=[01](&|$)/, '$1').replace(/[?&]$/, '');
   return withRetry401(token =>
     axios({
       method: 'post',
@@ -213,7 +220,7 @@ async function downloadSharedFile(sharedLink, filePath) {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'text/plain',
-        'Dropbox-API-Arg': dropboxArg({ url: sharedLink, path: filePath }),
+        'Dropbox-API-Arg': dropboxArg({ url: linkUrl, path: filePath }),
       },
       responseType: 'arraybuffer',
       maxContentLength: Infinity,
