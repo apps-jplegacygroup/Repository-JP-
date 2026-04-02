@@ -8,8 +8,6 @@ import PhotoUploader from '../components/PhotoUploader.jsx';
 import PhotoGrid from '../components/PhotoGrid.jsx';
 import QAReview from '../components/QAReview.jsx';
 import SequenceEditor from '../components/SequenceEditor.jsx';
-import KlingPrompts from '../components/KlingPrompts.jsx';
-import HiggsfieldClips from '../components/HiggsfieldClips.jsx';
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -42,17 +40,13 @@ export default function PropertyDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Poll while step1 importing, step2 expanding, or step7 running.
-  // Interval: 2s during Dropbox import, 8s for step7, 4s otherwise.
+  // Poll while step1 importing or step2 expanding.
+  // Interval: 2s during Dropbox import, 4s otherwise.
   useEffect(() => {
     const step1Importing = property?.pipeline?.step1_upload?.meta?.importing === true;
-    const step2Status = property?.pipeline?.step2_stability?.status;
-    const step7Status = property?.pipeline?.step7_higgsfield?.status;
-    const shouldPoll  = step1Importing
-                     || step2Status === 'in_progress'
-                     || step7Status === 'in_progress';
-
-    const interval = step1Importing ? 2000 : step7Status === 'in_progress' ? 8000 : 4000;
+    const step2Status    = property?.pipeline?.step2_stability?.status;
+    const shouldPoll     = step1Importing || step2Status === 'in_progress';
+    const interval       = step1Importing ? 2000 : 4000;
 
     if (!shouldPoll) return;
 
@@ -62,12 +56,10 @@ export default function PropertyDetail() {
         setProperty(data.property);
         const s1Importing = data.property.pipeline.step1_upload?.meta?.importing === true;
         const s2 = data.property.pipeline.step2_stability?.status;
-        const s7 = data.property.pipeline.step7_higgsfield?.status;
-        if (!s1Importing && s2 !== 'in_progress' && s7 !== 'in_progress') {
+        if (!s1Importing && s2 !== 'in_progress') {
           clearInterval(timer);
           setImporting(false);
           setExpanding(false);
-          if (s7 === 'done' || s7 === 'failed') setActiveTab('higgsfield');
         }
       } catch (_) {}
     }, interval);
@@ -76,7 +68,6 @@ export default function PropertyDetail() {
   }, [
     property?.pipeline?.step1_upload?.meta?.importing,
     property?.pipeline?.step2_stability?.status,
-    property?.pipeline?.step7_higgsfield?.status,
     expanding,
   ]);
 
@@ -102,7 +93,7 @@ export default function PropertyDetail() {
     thumbnailUrl:        ep.thumbnailUrl,
   }));
 
-  // Tab labels — 6 steps (Analysis and Render removed)
+  // Tab labels — 4 steps
   const tabs = [
     { key: 'upload', label: `1 Upload (${photos.length})` },
     {
@@ -115,20 +106,6 @@ export default function PropertyDetail() {
     },
     { key: 'qa',       label: step4.status === 'done' ? '3 QA ✓' : '3 QA' },
     { key: 'sequence', label: property?.pipeline?.step5_sequence?.status === 'done' ? '4 Sequence ✓' : '4 Sequence' },
-    { key: 'kling',    label: property?.pipeline?.step6_kling?.status === 'done' ? '5 Kling ✓' : '5 Kling' },
-    {
-      key: 'higgsfield',
-      label: (() => {
-        const s = property?.pipeline?.step7_higgsfield;
-        if (s?.status === 'done') return '6 Higgsfield ✓';
-        if (s?.status === 'in_progress') {
-          const m = s.meta || {};
-          return `6 Generando… (${m.progress || 0}/${m.total || '?'})`;
-        }
-        if (s?.status === 'paused') return '6 Higgsfield ⏸';
-        return '6 Higgsfield';
-      })(),
-    },
   ];
 
   async function handleFilesSelected(files) {
@@ -259,21 +236,6 @@ export default function PropertyDetail() {
       setObjectRemovalError(err.response?.data?.error || 'Error al eliminar el objeto');
     } finally {
       setObjectRemoving(false);
-    }
-  }
-
-  async function handleDeleteFromSequence(photoId) {
-    const step5 = property?.pipeline?.step5_sequence || {};
-    const currentOrdered = step5.meta?.orderedPhotos || [];
-    const newOrdered = currentOrdered.filter(p => p.photoId !== photoId);
-    try {
-      await client.patch(`/properties/${id}/pipeline/step5_sequence`, {
-        status: step5.status || 'in_progress',
-        meta: { ...step5.meta, orderedPhotos: newOrdered },
-      });
-      await handleRefresh();
-    } catch {
-      alert('Error al eliminar la foto de la secuencia');
     }
   }
 
@@ -848,54 +810,6 @@ export default function PropertyDetail() {
               expandedPhotos={expandMeta.expandedPhotos || []}
               step5={step5}
               onSaved={handleRefresh}
-              onContinue={() => setActiveTab('kling')}
-            />
-          );
-        })()}
-
-        {/* ── Tab 6: Higgsfield Clips ───────────────────────── */}
-        {activeTab === 'higgsfield' && (() => {
-          const step5    = property?.pipeline?.step5_sequence || {};
-          const step7    = property?.pipeline?.step7_higgsfield || {};
-          const ordered  = step5.meta?.orderedPhotos || [];
-          return (
-            <HiggsfieldClips
-              propertyId={id}
-              orderedPhotos={ordered}
-              expandedPhotos={expandMeta.expandedPhotos || []}
-              step7={step7}
-              onStartGeneration={async () => {
-                const { data } = await client.get(`/properties/${id}`);
-                setProperty(data.property);
-                setActiveTab('higgsfield');
-              }}
-              onRefresh={handleRefresh}
-            />
-          );
-        })()}
-
-        {/* ── Tab 6: Kling Prompts ──────────────────────────── */}
-        {activeTab === 'kling' && (() => {
-          const step5     = property?.pipeline?.step5_sequence || {};
-          const step6     = property?.pipeline?.step6_kling    || {};
-          const ordered   = step5.meta?.orderedPhotos || [];
-          if (ordered.length === 0) return (
-            <div className="text-center py-16 text-gray-500">
-              <p>El orden de secuencia no está guardado aún.</p>
-              <button onClick={() => setActiveTab('sequence')} className="mt-3 text-amber-500 hover:text-amber-400 text-sm underline">
-                Ir a Secuencia →
-              </button>
-            </div>
-          );
-          return (
-            <KlingPrompts
-              propertyId={id}
-              orderedPhotos={ordered}
-              expandedPhotos={expandMeta.expandedPhotos || []}
-              step6={step6}
-              onSaved={handleRefresh}
-              onContinue={() => setActiveTab('higgsfield')}
-              onDeletePhoto={handleDeleteFromSequence}
             />
           );
         })()}
