@@ -6,6 +6,8 @@
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
 const { scoreLeadFromNotes } = require('./leadScore');
+const { getLeadsComparisonCache, saveLeadsComparisonCache } = require('../utils/storage');
+const { updatePersonSource } = require('./fub');
 
 const FUB_BASE_URL = 'https://api.followupboss.com/v1';
 
@@ -148,7 +150,13 @@ function cleanSourceTag(rawSource) {
   else if (lower.includes('homes.com'))                              return 'Homes.com';
   else if (lower.includes('referido'))                               return 'Referidos';
 
-  if (!channel) return rawSource; // Unknown format — return as-is
+  if (!channel) {
+    // Pattern: "PaolaUnknown", "JorgeUnknown", "JPUnknown" — Respond.io couldn't identify the channel
+    if (/^Paola/i.test(rawSource)) return 'Sin canal (Paola)';
+    if (/^Jorge/i.test(rawSource)) return 'Sin canal (Jorge)';
+    if (/^JP/i.test(rawSource))    return 'Sin canal (JP)';
+    return rawSource;
+  }
 
   if (channel === 'WhatsApp') return 'WhatsApp';
 
@@ -551,11 +559,13 @@ async function fetchLeadsForDate(dateStr) {
 
     // Build base lead objects
     const baseLeads = people.map((p) => ({
-      id:     p.id,
-      name:   [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
-      phone:  p.phones?.[0]?.value || '—',
-      email:  p.emails?.[0]?.value || '',
-      source: normalizeSource(p.source) || 'Sin fuente',
+      id:        p.id,
+      name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+      phone:     p.phones?.[0]?.value || '—',
+      email:     p.emails?.[0]?.value || '',
+      source:    normalizeSource(p.source) || 'Sin fuente',
+      videoLink: p.customVideoLink || null,
+      videoName: p.customVideoName || null,
     }));
 
     console.log('[Debug] Primeros 3 leads:', JSON.stringify(baseLeads.slice(0, 3)));
@@ -571,16 +581,99 @@ async function fetchLeadsForDate(dateStr) {
       const lead = baseLeads[i];
       try {
         const { score, reason } = await scoreLeadFromNotes(lead, notesPerLead[i]);
-        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, score, scoreReason: reason });
+        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, videoLink: lead.videoLink, videoName: lead.videoName, score, scoreReason: reason });
       } catch (leadErr) {
         console.error(`[Debug] Error scoring lead "${lead.name}":`, leadErr.message);
-        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, score: 1, scoreReason: 'Sin análisis' });
+        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, videoLink: lead.videoLink, videoName: lead.videoName, score: 1, scoreReason: 'Sin análisis' });
       }
     }
 
     return scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
   } catch (err) {
     console.error('[FUBReport] Error fetching leads for date:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Fetch and score all FUB leads created between startDateStr and endDateStr (inclusive, ET timezone).
+ * Scores up to maxScored leads via AI; the rest get score=null.
+ * @param {string} startDateStr  - 'YYYY-MM-DD'
+ * @param {string} endDateStr    - 'YYYY-MM-DD'
+ * @param {object} opts
+ * @param {number} opts.maxScored - max leads to AI-score (default 50)
+ */
+async function fetchLeadsForRange(startDateStr, endDateStr, { maxScored = 50 } = {}) {
+  try {
+    const { dayStart } = etDayBounds(startDateStr);
+    const { dayEnd }   = etDayBounds(endDateStr);
+
+    console.log(`[FUBReport] fetchLeadsForRange ${startDateStr} – ${endDateStr}`);
+
+    const people = [];
+    let offset = 0;
+    const limit = 100;
+
+    while (true) {
+      const response = await axios.get(`${FUB_BASE_URL}/people`, {
+        headers: fubHeaders(),
+        params: { sort: '-created', limit, offset },
+        timeout: 15000,
+      });
+
+      const batch = response.data?.people || [];
+      if (batch.length === 0) break;
+
+      const inRange = batch.filter((p) => {
+        const created = new Date(p.created);
+        return created >= dayStart && created <= dayEnd
+          && normalizeSource(p.source) !== null;
+      });
+      people.push(...inRange);
+
+      const oldest = new Date(batch[batch.length - 1]?.created || 0);
+      if (oldest < dayStart) break;
+      if (batch.length < limit) break;
+      offset += limit;
+    }
+
+    console.log(`[FUBReport] fetchLeadsForRange found ${people.length} leads`);
+
+    // Build base lead objects
+    const baseLeads = people.map((p) => ({
+      id:        p.id,
+      name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+      phone:     p.phones?.[0]?.value || '—',
+      email:     p.emails?.[0]?.value || '',
+      source:    normalizeSource(p.source) || 'Sin fuente',
+      videoLink: p.customVideoLink || null,
+      videoName: p.customVideoName || null,
+    }));
+
+    // Fetch notes in parallel
+    const notesPerLead = await Promise.all(
+      baseLeads.map((lead) => fetchNotesForPerson(lead.id).catch(() => []))
+    );
+
+    // Score up to maxScored leads sequentially; skip the rest
+    const scored = [];
+    for (let i = 0; i < baseLeads.length; i++) {
+      const lead = baseLeads[i];
+      if (i < maxScored) {
+        try {
+          const { score, reason } = await scoreLeadFromNotes(lead, notesPerLead[i]);
+          scored.push({ name: lead.name, phone: lead.phone, source: lead.source, videoLink: lead.videoLink, videoName: lead.videoName, score, scoreReason: reason });
+        } catch {
+          scored.push({ name: lead.name, phone: lead.phone, source: lead.source, videoLink: lead.videoLink, videoName: lead.videoName, score: 1, scoreReason: 'Sin análisis' });
+        }
+      } else {
+        scored.push({ name: lead.name, phone: lead.phone, source: lead.source, videoLink: lead.videoLink, videoName: lead.videoName, score: null, scoreReason: 'Sin análisis (límite del período)' });
+      }
+    }
+
+    return scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  } catch (err) {
+    console.error('[FUBReport] Error fetching leads for range:', err.message);
     return [];
   }
 }
@@ -634,4 +727,384 @@ async function debugFUBLeads(dateStr) {
   };
 }
 
-module.exports = { collectMonthlyFUBData, fetchClosedToday, fetchLeadsForDate, cleanSourceTag, formatUSD, debugFUBLeads };
+// ─── Deals Pipeline ────────────────────────────────────────────────────────
+
+const ACTIVE_STAGES  = ['Under Contract', 'Inspection', 'Appraisal', 'Financing', 'Clear to Close'];
+const PROXIMOS_STAGE = 'Proximos Deals'; // FUB stores with trailing space — match via trim()
+const CLOSED_STAGE   = 'Closing';
+
+function formatCloseDate(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const now  = new Date();
+  const diff = new Date(dateStr) - new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.ceil(diff / 86400000);
+}
+
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Returns the most relevant stage deadline and its label for a deal.
+ * Priority: most imminent deadline for the current work stage.
+ */
+function stageDeadlineInfo(d) {
+  const stage = d.stageName;
+  const pick = (dateStr, label) => dateStr ? { date: dateStr, label } : null;
+
+  if (stage === 'Under Contract') {
+    return pick(d.dueDiligenceDate, 'Vence DD')
+        || pick(d.earnestMoneyDueDate, 'Earnest Money')
+        || pick(d.projectedCloseDate, 'Cierre');
+  }
+  if (stage === 'Inspection') {
+    return pick(d.customInspectionDeadline, 'Vence Inspección')
+        || pick(d.dueDiligenceDate, 'Vence DD')
+        || pick(d.projectedCloseDate, 'Cierre');
+  }
+  if (stage === 'Appraisal') {
+    return pick(d.dueDiligenceDate, 'Vence DD')
+        || pick(d.projectedCloseDate, 'Cierre');
+  }
+  if (stage === 'Financing') {
+    return pick(d.customFinancingDeadline, 'Vence Financing')
+        || pick(d.dueDiligenceDate, 'Vence DD')
+        || pick(d.projectedCloseDate, 'Cierre');
+  }
+  if (stage === 'Clear to Close') {
+    return pick(d.finalWalkThroughDate, 'Walk Through')
+        || pick(d.projectedCloseDate, 'Cierre');
+  }
+  return pick(d.projectedCloseDate, 'Cierre');
+}
+
+const MONTHS_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const MONTHS_ES_SHORT = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+/**
+ * Builds a month-by-month breakdown for the current calendar year.
+ * Returns an array of 12 objects:
+ *   { month: 'Jan', label: 'Ene', closings, closingsVolume, newContracts, newContractsVolume }
+ */
+function buildYearToDate(deals) {
+  const year = new Date().getFullYear();
+  const currentMonth = new Date().getMonth(); // 0-based
+
+  return MONTHS_EN.map((mon, idx) => {
+    const key = `${year}-${String(idx + 1).padStart(2, '0')}`;
+    const isPast = idx <= currentMonth;
+
+    const closings = deals.filter(
+      (d) => d.stageName === CLOSED_STAGE && (d.enteredStageAt || '').slice(0, 7) === key
+    );
+    const newContracts = deals.filter(
+      (d) => (d.createdAt || '').slice(0, 7) === key
+    );
+
+    return {
+      month:              mon,
+      label:              MONTHS_ES_SHORT[idx],
+      monthKey:           key,
+      isPast,
+      closings:           closings.length,
+      closingsVolume:     closings.reduce((s, d) => s + (Number(d.price) || 0), 0),
+      closingsCommission: closings.reduce((s, d) => s + (Number(d.agentCommission) || 0), 0),
+      newContracts:       newContracts.length,
+      newContractsVolume: newContracts.reduce((s, d) => s + (Number(d.price) || 0), 0),
+    };
+  });
+}
+
+/**
+ * Fetch the deals pipeline from FUB.
+ * Returns {
+ *   activeDeals, stageSummary, activeCount, activeTotal,
+ *   closedCount, closedTotal,
+ *   monthly: { closings, closingsVolume, closingsCommission, newContracts, newContractsVolume, monthKey }
+ * }
+ */
+async function fetchDealsPipeline() {
+  try {
+    const response = await axios.get(`${FUB_BASE_URL}/deals`, {
+      headers: fubHeaders(),
+      params: { limit: 100 },
+      timeout: 15000,
+    });
+
+    const deals = response.data?.deals || [];
+    const monthKey = currentMonthKey();
+
+    const byStage = {};
+    deals.forEach((d) => {
+      const stage = (d.stageName || '').trim() || 'Sin stage';
+      if (!byStage[stage]) byStage[stage] = [];
+      byStage[stage].push(d);
+    });
+
+    // Active deals — include all deadline fields, sorted by stage deadline ascending
+    const activeDeals = ACTIVE_STAGES.flatMap((stage) =>
+      (byStage[stage] || []).map((d) => {
+        const deadline = stageDeadlineInfo(d);
+        return {
+          stage,
+          name:                    d.name || '—',
+          price:                   Number(d.price) || 0,
+          projectedCloseDate:      d.projectedCloseDate      || null,
+          lender:                  d.customLender            || null,
+          financingType:           d.customFinancingType     || null,
+          titleCompany:            d.customTitleCompany      || null,
+          loanOfficer:             d.customLoanOfficer       || null,
+          agentCommission:         Number(d.agentCommission) || 0,
+          // Stage-specific deadline
+          deadlineDate:            deadline?.date  || null,
+          deadlineLabel:           deadline?.label || 'Cierre',
+        };
+      })
+    ).sort((a, b) => {
+      // Sort by stage deadline ascending (most urgent first), nulls last
+      if (!a.deadlineDate) return 1;
+      if (!b.deadlineDate) return -1;
+      return new Date(a.deadlineDate) - new Date(b.deadlineDate);
+    });
+
+    const stageSummary = ACTIVE_STAGES.map((stage) => {
+      const items = byStage[stage] || [];
+      return {
+        stage,
+        count: items.length,
+        total: items.reduce((sum, d) => sum + (Number(d.price) || 0), 0),
+      };
+    });
+
+    const closedDeals   = byStage[CLOSED_STAGE]   || [];
+    const proximosDeals = (byStage[PROXIMOS_STAGE] || []).map((d) => ({
+      id:          d.id,
+      name:        d.name || '—',
+      price:       Number(d.price) || 0,
+      description: d.description || '',
+      projectedCloseDate: d.projectedCloseDate || null,
+      lender:      d.customLender         || null,
+      loanOfficer: d.customLoanOfficer    || null,
+      financingType: d.customFinancingType || null,
+    }));
+
+    // Monthly stats — closings that entered Closing stage this month
+    const closingsThisMonth = closedDeals.filter(
+      (d) => (d.enteredStageAt || '').slice(0, 7) === monthKey
+    );
+    const closingsVolume     = closingsThisMonth.reduce((s, d) => s + (Number(d.price) || 0), 0);
+    const closingsCommission = closingsThisMonth.reduce((s, d) => s + (Number(d.agentCommission) || 0), 0);
+
+    // New contracts entered pipeline this month (created this month, any stage)
+    const newContractsThisMonth = deals.filter(
+      (d) => (d.createdAt || '').slice(0, 7) === monthKey
+    );
+    const newContractsVolume = newContractsThisMonth.reduce((s, d) => s + (Number(d.price) || 0), 0);
+
+    return {
+      activeDeals,
+      stageSummary,
+      activeCount:  activeDeals.length,
+      activeTotal:  activeDeals.reduce((sum, d) => sum + d.price, 0),
+      proximosDeals,
+      closedCount:  closedDeals.length,
+      closedTotal:  closedDeals.reduce((sum, d) => sum + (Number(d.price) || 0), 0),
+      monthly: {
+        monthKey,
+        closings:           closingsThisMonth.length,
+        closingsVolume,
+        closingsCommission,
+        closingsDeals:      closingsThisMonth.map((d) => ({
+          name:  d.name || '—',
+          price: Number(d.price) || 0,
+          date:  (d.enteredStageAt || '').slice(0, 10),
+          agentCommission: Number(d.agentCommission) || 0,
+        })),
+        newContracts:       newContractsThisMonth.length,
+        newContractsVolume,
+      },
+      yearToDate: buildYearToDate(deals),
+    };
+  } catch (err) {
+    console.error('[FUBReport] Error fetching deals pipeline:', err.message);
+    return null;
+  }
+}
+
+// ─── Source Auto-Correction ────────────────────────────────────────────────
+
+/**
+ * Scans all FUB contacts created on dateStr, detects dirty sources
+ * (raw Respond.io/Zapier concatenated tags), cleans them with cleanSourceTag,
+ * and updates FUB directly if the source changed.
+ *
+ * Returns a summary: { scanned, corrected, corrections: [{name, from, to}] }
+ */
+async function autoCorrectFUBSources(dateStr) {
+  // NOTE: FUB API does not allow updating the `source` field after contact creation.
+  // Strategy: detect dirty sources from Zapier, add a note + tag so the team sees the
+  // correct source in FUB, and the report already uses normalizeSource() so it's protected.
+  const { addNote, updateContactTags } = require('./fub');
+  const { dayStart, dayEnd } = etDayBounds(dateStr);
+  const summary = { scanned: 0, corrected: 0, corrections: [] };
+
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const response = await axios.get(`${FUB_BASE_URL}/people`, {
+      headers: fubHeaders(),
+      params: { sort: '-created', limit, offset },
+      timeout: 15000,
+    });
+
+    const batch = response.data?.people || [];
+    if (batch.length === 0) break;
+
+    const inDay = batch.filter((p) => {
+      const created = new Date(p.created);
+      return created >= dayStart && created <= dayEnd;
+    });
+
+    for (const person of inDay) {
+      summary.scanned++;
+      const raw   = person.source || '';
+      const clean = cleanSourceTag(raw);
+
+      // Skip if already clean, already tagged, or internal contact
+      if (clean === raw || normalizeSource(raw) === null) continue;
+      const alreadyTagged = (person.tags || []).includes('source-corregido');
+      if (alreadyTagged) continue;
+
+      try {
+        const name = [person.firstName, person.lastName].filter(Boolean).join(' ') || '—';
+
+        // Add a note with the corrected source so the team sees it in FUB
+        await addNote(person.id,
+          `⚠️ Source corregido automáticamente\n` +
+          `Source original (Zapier): ${raw}\n` +
+          `Source correcto: ${clean}\n` +
+          `Nota: el source en FUB no puede cambiarse vía API. El reporte diario ya usa "${clean}".`
+        );
+
+        // Tag it so we don't process it again
+        await updateContactTags(person.id, ['source-corregido'], person.tags || []);
+
+        summary.corrections.push({ name, from: raw, to: clean });
+        summary.corrected++;
+        console.log(`[SourceFix] "${name}": "${raw}" → "${clean}" (nota + tag agregados)`);
+      } catch (err) {
+        console.error(`[SourceFix] Error procesando ${person.id}:`, err.message);
+      }
+    }
+
+    const oldest = new Date(batch[batch.length - 1]?.created || 0);
+    if (oldest < dayStart || batch.length < limit) break;
+    offset += limit;
+  }
+
+  console.log(`[SourceFix] Done for ${dateStr}: scanned=${summary.scanned} corrected=${summary.corrected}`);
+  return summary;
+}
+
+// ─── Leads Year-over-Year Comparison ──────────────────────────────────────
+
+/**
+ * Fetches all FUB people created since Jan 1 of the previous year,
+ * groups them by year-month (excluding internal/null sources),
+ * and returns monthly counts for current year and previous year.
+ *
+ * Results are cached in data/leads_comparison_cache.json for 12 hours
+ * to avoid re-fetching 70+ pages on every report run.
+ */
+async function fetchLeadsYearComparison() {
+  // Return cache if fresh (< 12 hours old)
+  const cached = getLeadsComparisonCache();
+  if (cached?.lastUpdated) {
+    const ageHours = (Date.now() - new Date(cached.lastUpdated)) / 3600000;
+    if (ageHours < 12) {
+      console.log('[FUBReport] Using cached leads comparison (age: ' + ageHours.toFixed(1) + 'h)');
+      return cached.data;
+    }
+  }
+
+  console.log('[FUBReport] Fetching leads year comparison from FUB (full scan)...');
+
+  const currentYear  = new Date().getFullYear();
+  const previousYear = currentYear - 1;
+  const cutoff       = new Date(`${previousYear}-01-01T00:00:00Z`);
+
+  const monthlyCounts = {}; // { 'YYYY-MM': count }
+
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const response = await axios.get(`${FUB_BASE_URL}/people`, {
+      headers: fubHeaders(),
+      params:  { sort: '-created', limit, offset },
+      timeout: 20000,
+    });
+
+    const batch = response.data?.people || [];
+    if (batch.length === 0) break;
+
+    for (const p of batch) {
+      // Only count real leads (exclude internal sources)
+      if (normalizeSource(p.source) === null) continue;
+      const created = new Date(p.created);
+      if (created < cutoff) break;           // stop scan — older than our window
+      const key = p.created.slice(0, 7);     // 'YYYY-MM'
+      monthlyCounts[key] = (monthlyCounts[key] || 0) + 1;
+    }
+
+    // Stop once the oldest record in this batch is before our cutoff
+    const oldestInBatch = new Date(batch[batch.length - 1]?.created || 0);
+    if (oldestInBatch < cutoff || batch.length < limit) break;
+
+    offset += limit;
+  }
+
+  // Build the 12-month arrays for each year
+  const currentYearData  = {};
+  const previousYearData = {};
+
+  for (let m = 1; m <= 12; m++) {
+    const mk = String(m).padStart(2, '0');
+    currentYearData[`${currentYear}-${mk}`]  = monthlyCounts[`${currentYear}-${mk}`]  || 0;
+    previousYearData[`${previousYear}-${mk}`] = monthlyCounts[`${previousYear}-${mk}`] || 0;
+  }
+
+  const result = {
+    currentYear,
+    previousYear,
+    currentYearData,
+    previousYearData,
+  };
+
+  saveLeadsComparisonCache(result);
+  console.log('[FUBReport] Leads comparison cached. Months scanned:', Object.keys(monthlyCounts).length);
+  return result;
+}
+
+module.exports = {
+  collectMonthlyFUBData,
+  fetchClosedToday,
+  fetchLeadsForDate,
+  fetchLeadsForRange,
+  fetchDealsPipeline,
+  fetchLeadsYearComparison,
+  autoCorrectFUBSources,
+  cleanSourceTag,
+  formatUSD,
+  debugFUBLeads,
+  formatCloseDate,
+  daysUntil,
+};

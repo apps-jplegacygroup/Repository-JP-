@@ -2,9 +2,10 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '../../data');
-const QUEUE_FILE = path.join(DATA_DIR, 'queue.json');
-const STATS_FILE = path.join(DATA_DIR, 'stats.json');
-const EMAIL_LOG_FILE = path.join(DATA_DIR, 'email_log.json');
+const QUEUE_FILE               = path.join(DATA_DIR, 'queue.json');
+const STATS_FILE               = path.join(DATA_DIR, 'stats.json');
+const EMAIL_LOG_FILE           = path.join(DATA_DIR, 'email_log.json');
+const LEADS_COMPARISON_FILE    = path.join(DATA_DIR, 'leads_comparison_cache.json');
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -146,11 +147,23 @@ function getLastSuccessfulDailyEmail() {
   return null;
 }
 
+// --- Leads Year Comparison Cache ---
+
+function getLeadsComparisonCache() {
+  return readJSON(LEADS_COMPARISON_FILE, null);
+}
+
+function saveLeadsComparisonCache(data) {
+  writeJSON(LEADS_COMPARISON_FILE, { lastUpdated: new Date().toISOString(), data });
+}
+
 module.exports = {
   appendEmailLog,
   getEmailLog,
   getEmailLogForDate,
   getLastSuccessfulDailyEmail,
+  getLeadsComparisonCache,
+  saveLeadsComparisonCache,
   addToQueue,
   updateLeadInQueue,
   removeFromQueue,

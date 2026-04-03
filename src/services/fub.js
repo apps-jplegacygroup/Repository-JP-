@@ -102,4 +102,17 @@ async function createContact(lead) {
   return response.data;
 }
 
-module.exports = { createContact, findContact, addNote, updateContactTags };
+/**
+ * Updates the source field of an existing FUB contact.
+ * @param {number} personId
+ * @param {string} source - clean source string
+ */
+async function updatePersonSource(personId, source) {
+  await axios.put(
+    `${FUB_BASE_URL}/people/${personId}`,
+    { source },
+    { headers: FUB_HEADERS(), timeout: 10000 }
+  );
+}
+
+module.exports = { createContact, findContact, addNote, updateContactTags, updatePersonSource };
