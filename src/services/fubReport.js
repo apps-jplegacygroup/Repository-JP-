@@ -558,15 +558,24 @@ async function fetchLeadsForDate(dateStr) {
     console.log('[Debug] Leads encontrados en FUB:', people.length);
 
     // Build base lead objects
-    const baseLeads = people.map((p) => ({
-      id:        p.id,
-      name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
-      phone:     p.phones?.[0]?.value || '—',
-      email:     p.emails?.[0]?.value || '',
-      source:    normalizeSource(p.source) || 'Sin fuente',
-      videoLink: p.customVideoLink || null,
-      videoName: p.customVideoName || null,
-    }));
+    const baseLeads = people.map((p) => {
+      let source = normalizeSource(p.source) || 'Sin fuente';
+      if (source === 'Sin fuente' || source.startsWith('Sin canal')) {
+        const assignee = p.assignedTo || '';
+        if (/paola/i.test(assignee))       source = 'Paola Díaz';
+        else if (/jorge/i.test(assignee))  source = 'Jorge Florez';
+        else                               source = 'Sin fuente';
+      }
+      return {
+        id:        p.id,
+        name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+        phone:     p.phones?.[0]?.value || '—',
+        email:     p.emails?.[0]?.value || '',
+        source,
+        videoLink: p.customVideoLink || null,
+        videoName: p.customVideoName || null,
+      };
+    });
 
     console.log('[Debug] Primeros 3 leads:', JSON.stringify(baseLeads.slice(0, 3)));
 
@@ -640,15 +649,24 @@ async function fetchLeadsForRange(startDateStr, endDateStr, { maxScored = 50 } =
     console.log(`[FUBReport] fetchLeadsForRange found ${people.length} leads`);
 
     // Build base lead objects
-    const baseLeads = people.map((p) => ({
-      id:        p.id,
-      name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
-      phone:     p.phones?.[0]?.value || '—',
-      email:     p.emails?.[0]?.value || '',
-      source:    normalizeSource(p.source) || 'Sin fuente',
-      videoLink: p.customVideoLink || null,
-      videoName: p.customVideoName || null,
-    }));
+    const baseLeads = people.map((p) => {
+      let source = normalizeSource(p.source) || 'Sin fuente';
+      if (source === 'Sin fuente' || source.startsWith('Sin canal')) {
+        const assignee = p.assignedTo || '';
+        if (/paola/i.test(assignee))       source = 'Paola Díaz';
+        else if (/jorge/i.test(assignee))  source = 'Jorge Florez';
+        else                               source = 'Sin fuente';
+      }
+      return {
+        id:        p.id,
+        name:      [p.firstName, p.lastName].filter(Boolean).join(' ') || '—',
+        phone:     p.phones?.[0]?.value || '—',
+        email:     p.emails?.[0]?.value || '',
+        source,
+        videoLink: p.customVideoLink || null,
+        videoName: p.customVideoName || null,
+      };
+    });
 
     // Fetch notes in parallel
     const notesPerLead = await Promise.all(

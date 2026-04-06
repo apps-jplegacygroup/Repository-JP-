@@ -51,14 +51,7 @@ async function analyzeWithAI(text) {
 
   const client = new Anthropic({ apiKey });
 
-  try {
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: `You are a real estate lead scoring assistant. Analyze the following lead information and return ONLY a JSON object — no explanation, no extra text.
+  const prompt = `You are a real estate lead scoring assistant. Analyze the following lead information and return ONLY a JSON object — no explanation, no extra text.
 
 Scoring criteria (set true if the lead clearly meets it):
 - hasBudget: mentions a specific budget or price (e.g. "500k", "$400,000", "300 mil")
@@ -73,30 +66,37 @@ Respond ONLY with this JSON (no extra text):
 {"hasBudget":false,"hasTimeline":false,"hasPurchaseType":false,"hasPreApproval":false,"hasLocation":false,"isSpanish":false,"reason":""}
 
 Lead info:
-${text}`,
-        },
-      ],
-    });
+${text}`;
 
-    const raw = message.content[0]?.text || '{}';
-    const json = JSON.parse(raw.match(/\{.*\}/s)?.[0] || '{}');
-    const breakdown = {
-      hasBudget:       !!json.hasBudget,
-      hasTimeline:     !!json.hasTimeline,
-      hasPurchaseType: !!json.hasPurchaseType,
-      hasPreApproval:  !!json.hasPreApproval,
-      hasLocation:     !!json.hasLocation,
-      isSpanish:       !!json.isSpanish,
-    };
-    const points = Object.entries(CRITERIA_POINTS).reduce(
-      (sum, [key, pts]) => sum + (breakdown[key] ? pts : 0),
-      0
-    );
-    return { points, breakdown, reason: json.reason || '' };
-  } catch (err) {
-    console.error('[Score] analyzeWithAI error:', err.message);
-    return { points: 0, breakdown: {}, reason: 'Error en análisis IA' };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const message = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const raw = message.content[0]?.text || '{}';
+      const json = JSON.parse(raw.match(/\{.*\}/s)?.[0] || '{}');
+      const breakdown = {
+        hasBudget:       !!json.hasBudget,
+        hasTimeline:     !!json.hasTimeline,
+        hasPurchaseType: !!json.hasPurchaseType,
+        hasPreApproval:  !!json.hasPreApproval,
+        hasLocation:     !!json.hasLocation,
+        isSpanish:       !!json.isSpanish,
+      };
+      const points = Object.entries(CRITERIA_POINTS).reduce(
+        (sum, [key, pts]) => sum + (breakdown[key] ? pts : 0),
+        0
+      );
+      return { points, breakdown, reason: json.reason || '' };
+    } catch (err) {
+      console.error(`[Score] analyzeWithAI attempt ${attempt} error:`, err.message);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
+    }
   }
+  return { points: 0, breakdown: {}, reason: 'Error en análisis IA' };
 }
 
 /**
@@ -108,15 +108,20 @@ ${text}`,
 async function scoreLeadFromNotes(lead, notes = []) {
   const hasEmailAndPhone = !!(lead.email && lead.phone);
 
-  const notesText = notes.length > 0
-    ? notes.map((n, i) => `Nota ${i + 1}: ${n}`).join('\n')
-    : '';
+  // No notes — skip AI, return base structural score
+  if (notes.length === 0) {
+    console.log(`[Score] Sin notas en FUB para: ${lead.name} — omitiendo IA`);
+    const score = Math.min(10, Math.max(1, hasEmailAndPhone ? 1 : 1));
+    return { score, reason: 'Sin notas disponibles en FUB' };
+  }
+
+  const notesText = notes.map((n, i) => `Nota ${i + 1}: ${n}`).join('\n');
 
   const context = [
     lead.name   && `Nombre: ${lead.name}`,
     lead.source && `Fuente: ${lead.source}`,
     lead.phone  && `Teléfono: ${lead.phone}`,
-    notesText   && `\nNOTAS EN FUB:\n${notesText}`,
+    `\nNOTAS EN FUB:\n${notesText}`,
   ]
     .filter(Boolean)
     .join('\n');
