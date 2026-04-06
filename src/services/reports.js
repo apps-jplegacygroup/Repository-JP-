@@ -265,8 +265,17 @@ function buildPipelineHTML(pipeline) {
       </td>`;
     }).join('');
 
-  // ── Active deal rows — sorted by stage deadline (most urgent first) ──
-  const dealRows = pipeline.activeDeals.map((d) => {
+  // ── Split: overdue vs current deals ──
+  const overdueDeals = pipeline.activeDeals.filter((d) => {
+    const days = daysUntil(d.deadlineDate);
+    return days !== null && days < 0;
+  });
+  const currentDeals = pipeline.activeDeals.filter((d) => {
+    const days = daysUntil(d.deadlineDate);
+    return days === null || days >= 0;
+  });
+
+  function buildDealRow(d, forceRowBg) {
     const days     = daysUntil(d.deadlineDate);
     const isUrgent = days !== null && days <= 7;
     const isPast   = days !== null && days < 0;
@@ -294,7 +303,7 @@ function buildPipelineHTML(pipeline) {
       : (d.financingType || '');
     const titleStr  = d.titleCompany || '';
 
-    const rowBg = isPast ? '#120000' : isUrgent ? '#0F0C00' : '#111111';
+    const rowBg = forceRowBg || (isPast ? '#120000' : isUrgent ? '#0F0C00' : '#111111');
     return `<tr>
       <td style="padding:11px 16px;background:${rowBg};border-bottom:1px solid #1E1E1E;">
         <table width="100%" cellpadding="0" cellspacing="0"><tr>
@@ -313,7 +322,17 @@ function buildPipelineHTML(pipeline) {
         </tr></table>
       </td>
     </tr>`;
-  }).join('');
+  }
+
+  // ── Overdue alert section ──
+  const overdueSection = overdueDeals.length > 0 ? `
+    <tr><td style="padding:10px 16px 6px;background:#1A0000;border-bottom:1px solid #3A0000;">
+      <span style="color:#FF4444;font-size:11px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">⚠️ Deals Vencidos — Requieren Atención Inmediata</span>
+    </td></tr>
+    ${overdueDeals.map((d) => buildDealRow(d, '#1A0000')).join('')}
+  ` : '';
+
+  const dealRows = currentDeals.map((d) => buildDealRow(d, null)).join('');
 
   // ── Monthly sales summary ──
   const m = pipeline.monthly;
@@ -361,6 +380,7 @@ function buildPipelineHTML(pipeline) {
       <tr><td colspan="3" style="padding:16px 16px 12px;border-bottom:1px solid #2A2A2A;">
         <table cellpadding="0" cellspacing="4"><tr>${summaryCards}</tr></table>
       </td></tr>
+      ${overdueSection}
       ${dealRows}` : `<tr><td colspan="3" style="padding:16px;text-align:center;color:#555555;font-size:11px;font-family:Arial,sans-serif;font-style:italic;">Sin deals activos en este momento.</td></tr>`;
 
   return `
@@ -953,12 +973,25 @@ async function buildWeeklyReport(weekStart, weekEnd) {
   });
 
   if (pipeline?.activeDeals?.length > 0) {
+    const overdueText  = pipeline.activeDeals.filter((d) => { const days = daysUntil(d.deadlineDate); return days !== null && days < 0; });
+    const currentText  = pipeline.activeDeals.filter((d) => { const days = daysUntil(d.deadlineDate); return days === null || days >= 0; });
+
+    if (overdueText.length > 0) {
+      lines.push(``);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      lines.push(`⚠️ DEALS VENCIDOS — REQUIEREN ATENCIÓN INMEDIATA`);
+      overdueText.forEach((d) => {
+        const days = daysUntil(d.deadlineDate);
+        lines.push(`  ⛔ [${d.stage}] ${d.name} — ${formatUSD(d.price)} — VENCIDO hace ${Math.abs(days)}d`);
+      });
+    }
+
     lines.push(``);
     lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    lines.push(`📋 PIPELINE ACTIVO — ${pipeline.activeDeals.length} deals`);
-    pipeline.activeDeals.forEach((d) => {
+    lines.push(`📋 PIPELINE ACTIVO — ${currentText.length} deals`);
+    currentText.forEach((d) => {
       const days    = daysUntil(d.deadlineDate);
-      const urgency = days === null ? '' : days < 0 ? ' ⚠️ VENCIDO' : days === 0 ? ' ⚠️ HOY' : days <= 7 ? ` ⚠️ ${days}d` : '';
+      const urgency = days === null ? '' : days === 0 ? ' ⚠️ HOY' : days <= 7 ? ` ⚠️ ${days}d` : '';
       lines.push(`  • [${d.stage}] ${d.name} — ${formatUSD(d.price)}${urgency}`);
     });
   }

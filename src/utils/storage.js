@@ -74,10 +74,10 @@ function todayKeyET() {
 }
 
 // Date string (YYYY-MM-DD) for yesterday in America/New_York
+// Subtract exactly 24h from now, then format in ET — avoids UTC/ET date boundary bugs
 function yesterdayKeyET() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  return yesterday.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
 function getStats() {

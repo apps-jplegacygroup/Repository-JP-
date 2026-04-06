@@ -108,11 +108,19 @@ ${text}`;
 async function scoreLeadFromNotes(lead, notes = []) {
   const hasEmailAndPhone = !!(lead.email && lead.phone);
 
-  // No notes — skip AI, return base structural score
+  // No notes — score based only on structural data (phone +2, email +2, defined source +1)
   if (notes.length === 0) {
-    console.log(`[Score] Sin notas en FUB para: ${lead.name} — omitiendo IA`);
-    const score = Math.min(10, Math.max(1, hasEmailAndPhone ? 1 : 1));
-    return { score, reason: 'Sin notas disponibles en FUB' };
+    console.log(`[Score] Sin notas en FUB para: ${lead.name} — score estructural`);
+    let structPoints = 0;
+    const hasPhone  = lead.phone && lead.phone !== '—';
+    const hasEmail  = !!lead.email;
+    const hasSource = lead.source && lead.source !== 'Sin fuente';
+    if (hasPhone)  structPoints += 2;
+    if (hasEmail)  structPoints += 2;
+    if (hasSource) structPoints += 1;
+    const score = Math.min(10, Math.max(1, structPoints));
+    const parts = [hasPhone && 'teléfono', hasEmail && 'email', hasSource && `fuente: ${lead.source}`].filter(Boolean);
+    return { score, reason: `Sin notas en FUB — score por datos básicos (${parts.join(', ')})` };
   }
 
   const notesText = notes.map((n, i) => `Nota ${i + 1}: ${n}`).join('\n');
