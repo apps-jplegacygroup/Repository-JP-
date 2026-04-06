@@ -1656,7 +1656,7 @@ function startSocialReport() {
   });
 
   // AJUSTE 2: Diario lun-vie 8:00am ET
-  cron.schedule('0 13 * * 1-5', async () => {
+  cron.schedule('30 13 * * 1-5', async () => {
     console.log('[Social Daily] Cron: reporte diario de redes…');
     try { await sendDailySocialReport(); }
     catch (err) { console.error('[Social Daily] Error:', err.message); }
@@ -1669,7 +1669,7 @@ function startSocialReport() {
     catch (err) { console.error('[Social Monthly] Error:', err.message); }
   });
 
-  console.log('[Cron] ✅ Social Daily:   0 13 * * 1-5  → 8:00am ET lun-vie');
+  console.log('[Cron] ✅ Social Daily:   30 13 * * 1-5 → 8:30am ET lun-vie');
   console.log('[Cron] ✅ Social Weekly:  5 14 * * 1    → 9:05am ET lunes');
   console.log('[Cron] ✅ Social Monthly: 5 12 1 * *    → 8:05am ET día 1');
 }
