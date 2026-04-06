@@ -26,6 +26,9 @@ const RECIPIENTS = [
   'jeffersonbeltran@jplegacygroup.com',
 ];
 
+// Daily report: 4 recipients (no jefferson — sólo resumen operativo)
+const DAILY_RECIPIENTS = RECIPIENTS.filter(r => !r.includes('jefferson'));
+
 // Brand definitions — color is gradient start, color2 is end
 const BRANDS = [
   {
@@ -868,20 +871,602 @@ async function sendSocialReport() {
 }
 
 // ══════════════════════════════════════════════════════════
-// CRON — Lunes 9:00am ET (14:00 UTC)
+// DATE HELPERS — DAILY & MONTHLY
+// ══════════════════════════════════════════════════════════
+
+function yesterdayDateET() {
+  const now = nowET();
+  const d = new Date(now); d.setDate(now.getDate() - 1);
+  return dateKeyET(d);
+}
+
+function previousMonthRange() {
+  const now = nowET();
+  const y = now.getFullYear(), cur = now.getMonth(); // 0-based
+  const pm = cur === 0 ? 11 : cur - 1;
+  const py = cur === 0 ? y - 1 : y;
+  const start = `${py}-${String(pm + 1).padStart(2,'0')}-01`;
+  const last  = new Date(py, pm + 1, 0).getDate();
+  const end   = `${py}-${String(pm + 1).padStart(2,'0')}-${String(last).padStart(2,'0')}`;
+  return { start, end, name: MONTHS_ES[pm], year: py };
+}
+
+function monthBeforeRange() {
+  const { start: ps } = previousMonthRange();
+  const [py, pm] = ps.split('-').map(Number); // pm 1-based
+  const bm = pm === 1 ? 12 : pm - 1;
+  const by = pm === 1 ? py - 1 : py;
+  const start = `${by}-${String(bm).padStart(2,'0')}-01`;
+  const last  = new Date(by, bm, 0).getDate();
+  const end   = `${by}-${String(bm).padStart(2,'0')}-${String(last).padStart(2,'0')}`;
+  return { start, end, name: MONTHS_ES[bm - 1], year: by };
+}
+
+function bestDayHour(posts) {
+  const dMap = {}, hMap = {};
+  for (const p of posts) {
+    let ms = typeof p.timestamp === 'number' ? p.timestamp : null;
+    if (!ms && p.created)               ms = new Date(p.created).getTime();
+    if (!ms && p.publishedAt?.dateTime) ms = new Date(p.publishedAt.dateTime).getTime();
+    if (!ms && p.createTime)            ms = new Date(p.createTime).getTime();
+    if (!ms || isNaN(ms)) continue;
+    const dt = new Date(ms);
+    const dw = dt.getDay(), hr = dt.getHours();
+    if (!dMap[dw]) dMap[dw] = { n:0, e:0 };
+    dMap[dw].n++; dMap[dw].e += p.engagement||0;
+    if (!hMap[hr]) hMap[hr] = { n:0, e:0 };
+    hMap[hr].n++; hMap[hr].e += p.engagement||0;
+  }
+  let bd = null, bh = null, maxD = -1, maxH = -1;
+  for (const [k, v] of Object.entries(dMap)) { const a = v.e/v.n; if (a > maxD) { maxD=a; bd=+k; } }
+  for (const [k, v] of Object.entries(hMap)) { const a = v.e/v.n; if (a > maxH) { maxH=a; bh=+k; } }
+  return {
+    day:    bd !== null ? DAYS_ES[bd] : '—',
+    hour:   bh !== null ? `${String(bh).padStart(2,'0')}:00` : '—',
+    dayEng: maxD > 0   ? fmtPct(maxD) : '—',
+  };
+}
+
+// ══════════════════════════════════════════════════════════
+// DAILY DATA BUILDER  (Instagram · Facebook · YouTube)
+// ══════════════════════════════════════════════════════════
+
+async function buildDailySocialData() {
+  const { http, userId } = mcClient();
+  const date      = yesterdayDateET();
+  const now2      = nowET();
+  const dbd       = new Date(now2); dbd.setDate(now2.getDate() - 2);
+  const dayBefore = dateKeyET(dbd);
+
+  console.log(`[Social Daily] Fecha: ${date}`);
+
+  const resolved = await resolveBrands(http, userId);
+  const results  = {};
+
+  for (const brand of BRANDS) {
+    const b = resolved[brand.key];
+    if (!b?.blogId) { results[brand.key] = { ...b, data: {}, error: 'No blogId' }; continue; }
+
+    const data  = {};
+    const daily = brand.platforms.filter(p => ['instagram','facebook','youtube'].includes(p));
+    const jobs  = [];
+
+    if (daily.includes('instagram')) {
+      jobs.push(Promise.all([
+        safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
+        safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
+        fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: dayBefore, end: date }, 'account'),
+        safeGet(http, '/v2/analytics/timelines', {
+          userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date),
+          metric: 'reach', network: 'instagram', subject: 'account',
+        }),
+      ]).then(([posts, reels, foll, reachRaw]) => {
+        const all = [...extractPosts(posts), ...extractPosts(reels)];
+        const pr  = all.reduce((s,p) => s+(p.reach||0), 0);
+        const ar  = (reachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
+        data.instagram = {
+          platform: 'instagram', postsCount: all.length,
+          totalReach: pr > 0 ? pr : ar,
+          avgEng: all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+          newFollowers: foll.followerGrowth,
+          followers:    foll.followers,
+        };
+      }));
+    }
+
+    if (daily.includes('facebook')) {
+      jobs.push(safeGet(http, '/stats/facebook/posts', {
+        userId, blogId: b.blogId, start: toV1(date), end: toV1(date),
+      }).then(raw => {
+        const all = extractPosts(raw);
+        data.facebook = {
+          platform: 'facebook', postsCount: all.length,
+          totalReach: all.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
+          avgEng: all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+        };
+      }));
+    }
+
+    if (daily.includes('youtube')) {
+      jobs.push(safeGet(http, '/v2/analytics/posts/youtube', {
+        userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date), postsType: 'publishedInRange',
+      }).then(raw => {
+        const all = extractPosts(raw);
+        data.youtube = {
+          platform: 'youtube', postsCount: all.length,
+          totalViews: all.reduce((s,p)=>s+(p.views||0),0),
+          watchHours: Math.round(all.reduce((s,p)=>s+(p.watchMinutes||0),0)/60),
+        };
+      }));
+    }
+
+    await Promise.all(jobs);
+    results[brand.key] = { ...b, data };
+  }
+
+  return { date, results };
+}
+
+// ══════════════════════════════════════════════════════════
+// DAILY HTML BUILDER
+// ══════════════════════════════════════════════════════════
+
+function buildDailySocialHTML({ date, results }) {
+  const now     = nowET();
+  const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true });
+
+  function dayBrandRow(brand, result) {
+    const d     = result?.data || {};
+    const plats = ['instagram','facebook','youtube'].filter(p => brand.platforms.includes(p));
+    const rows  = plats.map(pfKey => {
+      const pf = d[pfKey];
+      const pm = PLATFORM_META[pfKey];
+      if (!pf) return '';
+      if (pf.postsCount === 0) {
+        return `<tr style="border-bottom:1px solid #111;">
+          <td style="padding:6px 12px;width:100px;color:${pm.color};font-size:11px;font-family:Arial;">${pm.icon} ${pm.name}</td>
+          <td style="padding:6px 12px;color:#444;font-size:11px;font-family:Arial;font-style:italic;">Sin publicaciones ayer</td>
+        </tr>`;
+      }
+      const metrics = pfKey === 'youtube'
+        ? `<span style="color:#888;font-size:10px;">Vistas:</span> <strong style="color:#FFF;">${fmtN(pf.totalViews||0)}</strong>` +
+          `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">Watch:</span> <strong style="color:#FFF;">${pf.watchHours||0}h</strong>`
+        : `<span style="color:#888;font-size:10px;">Alcance:</span> <strong style="color:#FFF;">${fmtN(pf.totalReach||0)}</strong>` +
+          (pf.avgEng != null ? `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">Eng:</span> <strong style="color:#FFF;">${fmtPct(pf.avgEng)}</strong>` : '');
+      const follStr = pfKey === 'instagram' && pf.newFollowers !== null && pf.newFollowers !== undefined
+        ? `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">+Seg:</span> <strong style="color:${pf.newFollowers>=0?'#4CAF50':'#FF4444'};">${fmtNP(pf.newFollowers)}</strong>`
+        : '';
+      return `<tr style="border-bottom:1px solid #111;">
+        <td style="padding:6px 12px;width:100px;color:${pm.color};font-size:11px;font-family:Arial;">${pm.icon} ${pm.name}</td>
+        <td style="padding:6px 12px;font-size:11px;font-family:Arial;">
+          <span style="color:#888;font-size:10px;">Posts:</span> <strong style="color:#FFF;">${pf.postsCount}</strong>
+          &nbsp;&nbsp;${metrics}${follStr}
+        </td>
+      </tr>`;
+    }).join('');
+
+    return `
+    <tr><td style="padding:0 0 10px;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:${brand.bg};border:1px solid ${brand.border};border-radius:8px;overflow:hidden;">
+      <tr><td style="padding:9px 14px;background:linear-gradient(90deg,${brand.color}22,${brand.color2}11,transparent);
+        border-bottom:1px solid ${brand.border};">
+        <span style="font-size:13px;font-weight:bold;font-family:Arial;
+          background:linear-gradient(90deg,${brand.color},${brand.color2});
+          -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+          ${brand.icon} ${brand.name}
+        </span>
+      </td></tr>
+      <tr><td><table width="100%" cellpadding="0" cellspacing="0">${rows}</table></td></tr>
+    </table>
+    </td></tr>`;
+  }
+
+  const brandRows    = BRANDS.map(bc => dayBrandRow(bc, results[bc.key])).join('');
+  const [y, m, d]    = date.split('-').map(Number);
+  const dt           = new Date(Date.UTC(y, m-1, d));
+
+  const body = `
+    <tr><td style="padding:24px 0 16px;text-align:center;border-bottom:2px solid #C9A84C;">
+      <div style="font-size:10px;letter-spacing:4px;color:#C9A84C;text-transform:uppercase;font-family:Arial;margin-bottom:5px;">JP LEGACY GROUP</div>
+      <div style="font-size:20px;font-weight:bold;color:#FFF;font-family:Arial;letter-spacing:1px;">📱 Reporte Diario de Redes</div>
+      <div style="font-size:12px;color:#AAA;font-family:Arial;margin-top:5px;">${DAYS_ES[dt.getUTCDay()]} ${d} de ${MONTHS_ES[m-1]}</div>
+      <div style="font-size:10px;color:#333;font-family:Arial;margin-top:3px;">Generado ${timeStr} ET</div>
+    </td></tr>
+    <tr><td style="height:16px;"></td></tr>
+    ${brandRows}
+    <tr><td style="text-align:center;padding:12px;border-top:1px solid #1A1A1A;">
+      <div style="color:#C9A84C;font-size:11px;font-weight:bold;letter-spacing:2px;font-family:Arial;">JP LEGACY GROUP</div>
+      <div style="color:#333;font-size:10px;font-family:Arial;margin-top:3px;">
+        Reporte automático diario · JP Legacy Agent · America/New_York
+      </div>
+    </td></tr>`;
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>JP Legacy — Redes Diario</title></head>
+<body style="margin:0;padding:0;background:#0A0A0A;">
+<table width="100%" cellpadding="0" cellspacing="0" bgcolor="#0A0A0A">
+<tr><td align="center" style="padding:16px 10px;">
+<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;">
+${body}
+</table></td></tr></table></body></html>`;
+}
+
+async function sendDailySocialReport() {
+  console.log('[Social Daily] Iniciando reporte diario de redes…');
+  const data    = await buildDailySocialData();
+  const html    = buildDailySocialHTML(data);
+  const [y, m, d] = data.date.split('-').map(Number);
+  const dt      = new Date(Date.UTC(y, m-1, d));
+  const subject = `JP Legacy — Reporte Diario de Redes · ${DAYS_ES[dt.getUTCDay()]} ${d} ${MONTHS_ES[m-1].slice(0,3)}`;
+
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[Social Daily] RESEND_API_KEY no configurado — email omitido');
+    return { subject, html, data };
+  }
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const { error } = await resend.emails.send({
+    from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+    to: DAILY_RECIPIENTS,
+    subject,
+    html,
+  });
+  if (error) throw new Error(error.message);
+  console.log(`[Social Daily] ✅ Email enviado: ${subject}`);
+  return { subject, data };
+}
+
+// ══════════════════════════════════════════════════════════
+// MONTHLY DATA BUILDER
+// ══════════════════════════════════════════════════════════
+
+async function buildMonthlySocialData() {
+  const { http, userId } = mcClient();
+  const range     = previousMonthRange();
+  const prevRange = monthBeforeRange();
+  console.log(`[Social Monthly] Mes: ${range.name} ${range.year} vs ${prevRange.name} ${prevRange.year}`);
+
+  const resolved = await resolveBrands(http, userId);
+  const results  = {};
+
+  for (const brand of BRANDS) {
+    const b = resolved[brand.key];
+    if (!b?.blogId) { results[brand.key] = { ...b, data:{}, prevData:{}, error:'No blogId' }; continue; }
+    console.log(`[Social Monthly] Fetching "${b.name}"…`);
+
+    const fetchForRange = async (r) => {
+      const data = {};
+      const jobs = [];
+      if (b.platforms.includes('instagram')) jobs.push(fetchInstagram(http, userId, b.blogId, r).then(d => { data.instagram = d; }));
+      if (b.platforms.includes('tiktok'))    jobs.push(fetchTikTok   (http, userId, b.blogId, r).then(d => { data.tiktok    = d; }));
+      if (b.platforms.includes('facebook'))  jobs.push(fetchFacebook (http, userId, b.blogId, r).then(d => { data.facebook  = d; }));
+      if (b.platforms.includes('youtube'))   jobs.push(fetchYouTube  (http, userId, b.blogId, r).then(d => { data.youtube   = d; }));
+      await Promise.all(jobs);
+      return data;
+    };
+
+    const [data, prevData] = await Promise.all([fetchForRange(range), fetchForRange(prevRange)]);
+    results[brand.key] = { ...b, data, prevData };
+    console.log(`[Social Monthly]   → ${b.name}: ${Object.values(data).reduce((s,p)=>s+(p?.postsCount||0),0)} posts`);
+  }
+
+  // All posts for top-5 and best day/hour analysis
+  const allPosts = [];
+  for (const brand of BRANDS) {
+    const b = results[brand.key];
+    if (!b?.data) continue;
+    for (const [pfKey, pf] of Object.entries(b.data))
+      for (const p of (pf?.posts||[]))
+        allPosts.push({ ...p, _brand: brand.name, _brandIcon: brand.icon, _platform: pfKey });
+  }
+
+  const top5Views = [...allPosts]
+    .sort((a,b) => (b.viewCount||b.views||b.videoViews||b.reach||0)-(a.viewCount||a.views||a.videoViews||a.reach||0))
+    .slice(0,5);
+  const top5Eng = [...allPosts]
+    .sort((a,b) => (b.engagement||0)-(a.engagement||0))
+    .slice(0,5);
+
+  const bestByBrand = {};
+  for (const brand of BRANDS) {
+    const b = results[brand.key];
+    if (!b?.data) continue;
+    bestByBrand[brand.key] = bestDayHour(Object.values(b.data).flatMap(pf => pf?.posts||[]));
+  }
+
+  const aiText = await generateMonthlyAI(results, range, prevRange);
+  return { range, prevRange, results, top5Views, top5Eng, bestByBrand, aiText };
+}
+
+async function generateMonthlyAI(results, range, prevRange) {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  try {
+    const client = new Anthropic();
+    const summary = BRANDS.map(bc => {
+      const b = results[bc.key];
+      const d = b?.data||{}, pd = b?.prevData||{};
+      return `${bc.name} — ${range.name}:
+  Instagram: ${d.instagram?.postsCount||0} posts, alcance ${fmtN(d.instagram?.totalReach)}, eng ${fmtPct(d.instagram?.avgEng)}, seguidores ${fmtN(d.instagram?.followers)} (${fmtNP(d.instagram?.followerGrowth)})
+  TikTok: ${d.tiktok?.postsCount||0} videos, ${fmtN(d.tiktok?.totalViews)} vistas, eng ${fmtPct(d.tiktok?.avgEng)}
+  Facebook: ${d.facebook?.postsCount||0} posts, alcance ${fmtN(d.facebook?.totalReach)}, eng ${fmtPct(d.facebook?.avgEng)}
+  YouTube: ${d.youtube?.postsCount||0} videos, ${fmtN(d.youtube?.totalViews)} vistas
+  vs ${prevRange.name}: IG posts ${pd.instagram?.postsCount||0}, alcance ${fmtN(pd.instagram?.totalReach)}, TT ${fmtN(pd.tiktok?.totalViews)} vistas`;
+    }).join('\n\n');
+
+    const { content } = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 750,
+      messages: [{
+        role: 'user',
+        content: `Eres estratega experto en redes sociales para JP Legacy Group (inmobiliaria en Florida).
+Datos de ${range.name} ${range.year} comparado con ${prevRange.name} ${prevRange.year}:
+
+${summary}
+
+Responde en español, máximo 700 tokens:
+
+📊 RESUMEN DEL MES
+[2-3 líneas sobre desempeño general vs mes anterior]
+
+🏆 MEJOR RESULTADO DEL MES
+[El logro más destacado con datos concretos]
+
+⚠️ PUNTO A MEJORAR
+[La mayor oportunidad de mejora]
+
+💡 5 RECOMENDACIONES PARA EL PRÓXIMO MES
+1. [recomendación estratégica concreta con plataforma y formato]
+2. [recomendación]
+3. [recomendación]
+4. [recomendación]
+5. [recomendación]
+
+🎯 OBJETIVO CLAVE PARA EL PRÓXIMO MES
+[Una meta específica y medible]`,
+      }],
+    });
+    return content[0]?.text || null;
+  } catch (e) {
+    console.warn('[Social Monthly] AI error:', e.message);
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// MONTHLY HTML BUILDER
+// ══════════════════════════════════════════════════════════
+
+function buildMonthlySocialHTML({ range, prevRange, results, top5Views, top5Eng, bestByBrand, aiText }) {
+  const now     = nowET();
+  const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true });
+
+  function delta(cur, prev) {
+    if (cur == null || prev == null || prev === 0) return '';
+    const d = cur - prev, pct = ((d/prev)*100).toFixed(1);
+    const color = d >= 0 ? '#4CAF50' : '#FF4444';
+    return `<span style="color:${color};font-size:10px;font-family:Arial;">${d>=0?'▲':'▼'} ${pct}%</span>`;
+  }
+
+  function compRow(label, cur, prev, fmt) {
+    const f = fmt || (v => fmtN(v||0));
+    return `<tr style="border-bottom:1px solid #0D0D0D;">
+      <td style="padding:5px 10px;color:#666;font-size:10px;font-family:Arial;">${label}</td>
+      <td style="padding:5px 10px;color:#FFF;font-size:11px;font-weight:bold;font-family:Arial;">${f(cur)}</td>
+      <td style="padding:5px 10px;color:#444;font-size:10px;font-family:Arial;">${f(prev)}</td>
+      <td style="padding:5px 10px;">${delta(cur, prev)}</td>
+    </tr>`;
+  }
+
+  function monthlyBrandSection(brand, result) {
+    const d  = result?.data    || {};
+    const pd = result?.prevData || {};
+    const bh = bestByBrand[brand.key] || { day:'—', hour:'—', dayEng:'—' };
+
+    const platformRows = brand.platforms.filter(pf => d[pf]).map(pf => platformCard(d[pf], brand)).join('');
+
+    const compTable = `
+    <tr><td style="padding:4px 0 8px;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:#0A0A0A;border:1px solid #1A1A1A;border-radius:6px;">
+      <tr style="background:#111;">
+        <td style="padding:5px 10px;color:#555;font-size:9px;letter-spacing:1px;font-family:Arial;">MÉTRICA</td>
+        <td style="padding:5px 10px;color:${brand.color};font-size:9px;letter-spacing:1px;font-family:Arial;">${range.name.toUpperCase()}</td>
+        <td style="padding:5px 10px;color:#444;font-size:9px;letter-spacing:1px;font-family:Arial;">${prevRange.name.toUpperCase()}</td>
+        <td style="padding:5px 10px;color:#333;font-size:9px;font-family:Arial;">Δ</td>
+      </tr>
+      ${compRow('IG Seguidores',  d.instagram?.followers,  pd.instagram?.followers)}
+      ${compRow('IG Alcance',     d.instagram?.totalReach, pd.instagram?.totalReach)}
+      ${compRow('IG Engagement',  d.instagram?.avgEng,     pd.instagram?.avgEng, v => fmtPct(v))}
+      ${d.tiktok ? compRow('TT Vistas',      d.tiktok?.totalViews, pd.tiktok?.totalViews) : ''}
+      ${d.tiktok ? compRow('TT Engagement',  d.tiktok?.avgEng,     pd.tiktok?.avgEng, v => fmtPct(v)) : ''}
+      ${compRow('FB Alcance',     d.facebook?.totalReach,  pd.facebook?.totalReach)}
+    </table>
+    </td></tr>
+    <tr><td style="padding:0 0 14px;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:#0D0D0D;border:1px solid #1A1A1A;border-radius:6px;">
+      <tr>
+        <td style="padding:8px 12px;">
+          <span style="color:#555;font-size:10px;font-family:Arial;">📅 Mejor día:</span>
+          <span style="color:${brand.color};font-size:11px;font-weight:bold;font-family:Arial;margin-left:6px;">${bh.day}</span>
+          <span style="color:#444;font-size:10px;font-family:Arial;margin-left:4px;">(eng ${bh.dayEng})</span>
+        </td>
+        <td style="padding:8px 12px;">
+          <span style="color:#555;font-size:10px;font-family:Arial;">⏰ Mejor hora:</span>
+          <span style="color:${brand.color};font-size:11px;font-weight:bold;font-family:Arial;margin-left:6px;">${bh.hour} ET</span>
+        </td>
+      </tr>
+    </table>
+    </td></tr>`;
+
+    return `
+    <tr><td style="padding:0 0 12px;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:${brand.bg};border:1px solid ${brand.border};border-radius:10px;overflow:hidden;">
+      <tr><td style="padding:12px 16px;background:linear-gradient(90deg,${brand.color}33,${brand.color2}11,transparent);
+        border-bottom:2px solid ${brand.border};">
+        <span style="font-size:15px;font-weight:bold;font-family:Arial;
+          background:linear-gradient(90deg,${brand.color},${brand.color2});
+          -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+          ${brand.icon} ${brand.name}
+        </span>
+        <span style="color:#444;font-size:10px;font-family:Arial;margin-left:10px;">
+          ${Object.values(d).reduce((s,p)=>s+(p?.postsCount||0),0)} posts en ${range.name}
+        </span>
+      </td></tr>
+      <tr><td style="padding:12px 14px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        ${platformRows}
+        <tr><td style="height:8px;"></td></tr>
+        ${compTable}
+      </table>
+      </td></tr>
+    </table>
+    </td></tr>`;
+  }
+
+  function top5Table(title, posts, icon) {
+    const rows = posts.map((p, i) => {
+      const val = icon === '👁' ? fmtN(p.viewCount||p.views||p.videoViews||p.reach||0) : fmtPct(p.engagement||0);
+      const pm  = PLATFORM_META[p._platform] || {};
+      return `<tr style="background:${i%2===0?'#0D0D0D':'#0A0A0A'};">
+        <td style="padding:6px 10px;color:${pm.color||'#888'};font-size:10px;font-family:Arial;width:70px;">${pm.icon||''} ${pm.name||p._platform}</td>
+        <td style="padding:6px 10px;color:#777;font-size:10px;font-family:Arial;width:70px;">${p._brandIcon} ${p._brand.split(' ')[0]}</td>
+        <td style="padding:6px 10px;color:#CCC;font-size:10px;font-family:Arial;">${cap(p)}</td>
+        <td style="padding:6px 10px;color:#FFF;font-size:11px;font-weight:bold;font-family:Arial;text-align:right;white-space:nowrap;">${val}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+    <tr><td style="padding:0 0 10px;">
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:#0D0D0D;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
+      <tr><td style="padding:9px 14px;background:#111;border-bottom:1px solid #1E1E1E;">
+        <span style="color:#C9A84C;font-size:11px;font-weight:bold;letter-spacing:2px;font-family:Arial;">${icon} TOP 5 — ${title}</span>
+      </td></tr>
+      <tr><td><table width="100%" cellpadding="0" cellspacing="0">${rows}</table></td></tr>
+    </table>
+    </td></tr>`;
+  }
+
+  function monthlyAiBlock(text) {
+    if (!text) return '';
+    const html = text
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/📊 (RESUMEN[^\n]*)/g,     '<strong style="color:#C9A84C;font-size:12px;">📊 $1</strong>')
+      .replace(/🏆 (MEJOR[^\n]*)/g,        '<strong style="color:#4CAF50;font-size:12px;">🏆 $1</strong>')
+      .replace(/⚠️ (PUNTO[^\n]*)/g,        '<strong style="color:#FF9800;font-size:12px;">⚠️ $1</strong>')
+      .replace(/💡 (5 RECOMEND[^\n]*)/g,   '<strong style="color:#FFD700;font-size:12px;">💡 $1</strong>')
+      .replace(/🎯 (OBJETIVO[^\n]*)/g,     '<strong style="color:#4FC3F7;font-size:12px;">🎯 $1</strong>')
+      .replace(/\n/g,'<br>');
+    return `<tr><td style="height:16px;"></td></tr>
+    <tr><td>
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:#060610;border:1px solid #1A1A2A;border-radius:8px;overflow:hidden;">
+      <tr><td style="padding:10px 14px;background:#0A0A1A;border-bottom:1px solid #1A1A2A;">
+        <span style="color:#818CF8;font-size:11px;font-weight:bold;letter-spacing:2px;font-family:Arial;">🤖 ANÁLISIS CLAUDE AI — ESTRATEGIA MENSUAL</span>
+      </td></tr>
+      <tr><td style="padding:16px;color:#CCC;font-size:12px;line-height:1.8;font-family:Arial;">${html}</td></tr>
+    </table>
+    </td></tr>`;
+  }
+
+  const brandSections = BRANDS.map(bc => monthlyBrandSection(bc, results[bc.key])).join('');
+
+  const body = `
+    <tr><td style="padding:28px 0 18px;text-align:center;border-bottom:2px solid #C9A84C;">
+      <div style="font-size:10px;letter-spacing:4px;color:#C9A84C;text-transform:uppercase;font-family:Arial;margin-bottom:5px;">JP LEGACY GROUP</div>
+      <div style="font-size:22px;font-weight:bold;color:#FFF;font-family:Arial;letter-spacing:1px;">📅 Reporte Mensual de Redes</div>
+      <div style="font-size:13px;color:#AAA;font-family:Arial;margin-top:6px;">${range.name} ${range.year}</div>
+      <div style="font-size:10px;color:#333;font-family:Arial;margin-top:3px;">Generado ${timeStr} ET</div>
+    </td></tr>
+    <tr><td style="height:18px;"></td></tr>
+    ${brandSections}
+    <tr><td style="height:6px;background:linear-gradient(90deg,#C9A84C33,transparent);border-radius:3px;"></td></tr>
+    <tr><td style="height:12px;"></td></tr>
+    ${top5Views.length ? top5Table('MAYOR ALCANCE / VISTAS', top5Views, '👁') : ''}
+    ${top5Eng.length   ? top5Table('MAYOR ENGAGEMENT',       top5Eng,   '⚡') : ''}
+    ${monthlyAiBlock(aiText)}
+    <tr><td style="height:24px;"></td></tr>
+    <tr><td style="text-align:center;padding:14px;border-top:1px solid #1A1A1A;">
+      <div style="color:#C9A84C;font-size:12px;font-weight:bold;letter-spacing:3px;font-family:Arial;">JP LEGACY GROUP</div>
+      <div style="color:#333;font-size:10px;font-family:Arial;margin-top:4px;">
+        Reporte mensual automático · JP Legacy Agent · America/New_York
+      </div>
+    </td></tr>`;
+
+  return `<!DOCTYPE html><html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>JP Legacy — Redes Mensual</title></head>
+<body style="margin:0;padding:0;background:#0A0A0A;">
+<table width="100%" cellpadding="0" cellspacing="0" bgcolor="#0A0A0A">
+<tr><td align="center" style="padding:20px 10px;">
+<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;">
+${body}
+</table></td></tr></table></body></html>`;
+}
+
+async function sendMonthlySocialReport() {
+  console.log('[Social Monthly] Iniciando reporte mensual de redes…');
+  const data    = await buildMonthlySocialData();
+  const html    = buildMonthlySocialHTML(data);
+  const subject = `JP Legacy — Reporte Mensual de Redes · ${data.range.name} ${data.range.year}`;
+
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[Social Monthly] RESEND_API_KEY no configurado — email omitido');
+    return { subject, html, data };
+  }
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const { error } = await resend.emails.send({
+    from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+    to: RECIPIENTS,
+    subject,
+    html,
+  });
+  if (error) throw new Error(error.message);
+  console.log(`[Social Monthly] ✅ Email enviado: ${subject}`);
+  return { subject, data };
+}
+
+// ══════════════════════════════════════════════════════════
+// CRON — Todos los schedules de Social
 // ══════════════════════════════════════════════════════════
 
 function startSocialReport() {
-  cron.schedule('0 14 * * 1', async () => {
+  // AJUSTE 1: Semanal a 9:05am ET (desfasado 5 min vs Marketing Weekly @ 9:00am)
+  cron.schedule('5 14 * * 1', async () => {
     console.log('[Social] Cron: reporte semanal de redes…');
     try { await sendSocialReport(); }
-    catch (err) { console.error('[Social] Error:', err.message); }
+    catch (err) { console.error('[Social] Error semanal:', err.message); }
   });
-  console.log('[Cron] ✅ Social Weekly:  0 14 * * 1    → 9:00am ET lunes');
+
+  // AJUSTE 2: Diario lun-vie 8:00am ET
+  cron.schedule('0 13 * * 1-5', async () => {
+    console.log('[Social Daily] Cron: reporte diario de redes…');
+    try { await sendDailySocialReport(); }
+    catch (err) { console.error('[Social Daily] Error:', err.message); }
+  });
+
+  // AJUSTE 3: Mensual día 1 a 8:05am ET
+  cron.schedule('5 12 1 * *', async () => {
+    console.log('[Social Monthly] Cron: reporte mensual de redes…');
+    try { await sendMonthlySocialReport(); }
+    catch (err) { console.error('[Social Monthly] Error:', err.message); }
+  });
+
+  console.log('[Cron] ✅ Social Daily:   0 13 * * 1-5  → 8:00am ET lun-vie');
+  console.log('[Cron] ✅ Social Weekly:  5 14 * * 1    → 9:05am ET lunes');
+  console.log('[Cron] ✅ Social Monthly: 5 12 1 * *    → 8:05am ET día 1');
 }
 
 // ══════════════════════════════════════════════════════════
 // EXPORTS
 // ══════════════════════════════════════════════════════════
 
-module.exports = { startSocialReport, sendSocialReport, buildSocialData };
+module.exports = {
+  startSocialReport,
+  sendSocialReport,        buildSocialData,
+  sendDailySocialReport,   buildDailySocialData,
+  sendMonthlySocialReport, buildMonthlySocialData,
+};
