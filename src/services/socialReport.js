@@ -931,119 +931,301 @@ function bestDayHour(posts) {
 // DAILY DATA BUILDER  (Instagram · Facebook · YouTube)
 // ══════════════════════════════════════════════════════════
 
+// Fetch one day's IG + FB + YT data for a brand, returning aggregated metrics
+async function fetchOneDayBrand(http, userId, b, date, prevDate) {
+  const daily = b.platforms.filter(p => ['instagram','facebook','youtube'].includes(p));
+  const data  = {}, prev = {};
+  const jobs  = [];
+
+  const agIg = (all, reachFallback) => ({
+    platform:       'instagram',
+    postsCount:     all.length,
+    totalReach:     all.reduce((s,p)=>s+(p.reach||0),0) || reachFallback,
+    avgEng:         all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+    totalLikes:     all.reduce((s,p)=>s+(p.likes||0),0),
+    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
+    totalSaved:     all.reduce((s,p)=>s+(p.saved||0),0),
+    totalShares:    all.reduce((s,p)=>s+(p.shares||0),0),
+    totalInteractions: all.reduce((s,p)=>s+(p.interactions||0),0),
+  });
+
+  const agFb = (all) => ({
+    platform:       'facebook',
+    postsCount:     all.length,
+    totalReach:     all.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
+    avgEng:         all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+    totalLikes:     all.reduce((s,p)=>s+(p.reactions||p.like||0),0),
+    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
+    totalShares:    all.reduce((s,p)=>s+(p.shares||0),0),
+  });
+
+  const agYt = (all) => ({
+    platform:       'youtube',
+    postsCount:     all.length,
+    totalViews:     all.reduce((s,p)=>s+(p.views||0),0),
+    watchHours:     Math.round(all.reduce((s,p)=>s+(p.watchMinutes||0),0)/60),
+    totalLikes:     all.reduce((s,p)=>s+(p.likes||0),0),
+    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
+  });
+
+  if (daily.includes('instagram')) {
+    jobs.push(Promise.all([
+      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
+      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date), metric: 'reach', network: 'instagram', subject: 'account' }),
+      // prev day posts/reels for comparison
+      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
+      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'reach', network: 'instagram', subject: 'account' }),
+    ]).then(([posts, reels, reachRaw, pp, pr, preachRaw]) => {
+      const all  = [...extractPosts(posts), ...extractPosts(reels)];
+      const pall = [...extractPosts(pp), ...extractPosts(pr)];
+      const ar   = (reachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
+      const par  = (preachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
+      data.instagram = agIg(all, ar);
+      prev.instagram = agIg(pall, par);
+    }));
+  }
+
+  if (daily.includes('facebook')) {
+    jobs.push(Promise.all([
+      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(date),     end: toV1(date)     }),
+      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
+    ]).then(([raw, praw]) => {
+      data.facebook = agFb(extractPosts(raw));
+      prev.facebook = agFb(extractPosts(praw));
+    }));
+  }
+
+  if (daily.includes('youtube')) {
+    jobs.push(Promise.all([
+      safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     postsType: 'publishedInRange' }),
+      safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), postsType: 'publishedInRange' }),
+    ]).then(([raw, praw]) => {
+      data.youtube = agYt(extractPosts(raw));
+      prev.youtube = agYt(extractPosts(praw));
+    }));
+  }
+
+  await Promise.all(jobs);
+  return { data, prev };
+}
+
 async function buildDailySocialData() {
   const { http, userId } = mcClient();
-  const date      = yesterdayDateET();
   const now2      = nowET();
+  const date      = yesterdayDateET();
   const dbd       = new Date(now2); dbd.setDate(now2.getDate() - 2);
-  const dayBefore = dateKeyET(dbd);
+  const prevDate  = dateKeyET(dbd);
+  const dbd2      = new Date(now2); dbd2.setDate(now2.getDate() - 3);
+  const prevPrev  = dateKeyET(dbd2);  // for follower delta of prevDate
 
-  console.log(`[Social Daily] Fecha: ${date}`);
+  console.log(`[Social Daily] Fecha: ${date} (vs ${prevDate})`);
 
   const resolved = await resolveBrands(http, userId);
   const results  = {};
 
   for (const brand of BRANDS) {
     const b = resolved[brand.key];
-    if (!b?.blogId) { results[brand.key] = { ...b, data: {}, error: 'No blogId' }; continue; }
+    if (!b?.blogId) { results[brand.key] = { ...b, data: {}, prev: {}, error: 'No blogId' }; continue; }
 
-    const data  = {};
-    const daily = brand.platforms.filter(p => ['instagram','facebook','youtube'].includes(p));
-    const jobs  = [];
+    const [dayData, follCur, follPrev] = await Promise.all([
+      fetchOneDayBrand(http, userId, b, date, prevDate),
+      fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: prevDate, end: date   }, 'account'),
+      fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: prevPrev, end: prevDate }, 'account'),
+    ]);
 
-    if (daily.includes('instagram')) {
-      jobs.push(Promise.all([
-        safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
-        safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
-        fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: dayBefore, end: date }, 'account'),
-        safeGet(http, '/v2/analytics/timelines', {
-          userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date),
-          metric: 'reach', network: 'instagram', subject: 'account',
-        }),
-      ]).then(([posts, reels, foll, reachRaw]) => {
-        const all = [...extractPosts(posts), ...extractPosts(reels)];
-        const pr  = all.reduce((s,p) => s+(p.reach||0), 0);
-        const ar  = (reachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
-        data.instagram = {
-          platform: 'instagram', postsCount: all.length,
-          totalReach: pr > 0 ? pr : ar,
-          avgEng: all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
-          newFollowers: foll.followerGrowth,
-          followers:    foll.followers,
-        };
-      }));
+    if (dayData.data.instagram) {
+      dayData.data.instagram.newFollowers = follCur.followerGrowth;
+      dayData.data.instagram.followers    = follCur.followers;
+    }
+    if (dayData.prev.instagram) {
+      dayData.prev.instagram.newFollowers = follPrev.followerGrowth;
+      dayData.prev.instagram.followers    = follPrev.followers;
     }
 
-    if (daily.includes('facebook')) {
-      jobs.push(safeGet(http, '/stats/facebook/posts', {
-        userId, blogId: b.blogId, start: toV1(date), end: toV1(date),
-      }).then(raw => {
-        const all = extractPosts(raw);
-        data.facebook = {
-          platform: 'facebook', postsCount: all.length,
-          totalReach: all.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
-          avgEng: all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
-        };
-      }));
-    }
-
-    if (daily.includes('youtube')) {
-      jobs.push(safeGet(http, '/v2/analytics/posts/youtube', {
-        userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date), postsType: 'publishedInRange',
-      }).then(raw => {
-        const all = extractPosts(raw);
-        data.youtube = {
-          platform: 'youtube', postsCount: all.length,
-          totalViews: all.reduce((s,p)=>s+(p.views||0),0),
-          watchHours: Math.round(all.reduce((s,p)=>s+(p.watchMinutes||0),0)/60),
-        };
-      }));
-    }
-
-    await Promise.all(jobs);
-    results[brand.key] = { ...b, data };
+    results[brand.key] = { ...b, data: dayData.data, prev: dayData.prev };
   }
 
-  return { date, results };
+  return { date, prevDate, results };
+}
+
+// ══════════════════════════════════════════════════════════
+// DAILY AI — Analysis per brand
+// ══════════════════════════════════════════════════════════
+
+async function generateDailyAI(results, date) {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  try {
+    const client = new Anthropic();
+    const summary = BRANDS.map(bc => {
+      const b = results[bc.key];
+      const d = b?.data || {}, p = b?.prev || {};
+      const ig  = d.instagram, pig = p.instagram;
+      const tt  = d.tiktok,    ptt = p.tiktok;
+      const fb  = d.facebook,  pfb = p.facebook;
+      const yt  = d.youtube,   pyt = p.youtube;
+      return `${bc.name}:
+  Instagram: ${ig?.postsCount||0} posts · alcance ${ig?.totalReach||0} (ayer: ${pig?.totalReach||0}) · eng ${ig?.avgEng?.toFixed(2)||'—'}% · likes ${ig?.totalLikes||0} · comentarios ${ig?.totalComments||0} · guardados ${ig?.totalSaved||0} · compartidos ${ig?.totalShares||0} · nuevos seguidores ${ig?.newFollowers ?? '—'} (ayer: ${pig?.newFollowers ?? '—'})
+  Facebook: ${fb?.postsCount||0} posts · alcance ${fb?.totalReach||0} · likes ${fb?.totalLikes||0}
+  YouTube: ${yt?.postsCount||0} videos · ${yt?.totalViews||0} vistas · ${yt?.watchHours||0}h watch`;
+    }).join('\n\n');
+
+    const { content } = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 900,
+      messages: [{
+        role: 'user',
+        content: `Eres estratega de redes sociales para JP Legacy Group (inmobiliaria en Florida).
+Datos del ${date} vs día anterior:
+
+${summary}
+
+Si una marca no publicó nada ese día, igual analiza el alcance orgánico y sugiere qué publicar al día siguiente.
+
+Responde en español, máximo 850 tokens, con este formato EXACTO:
+
+=== PAOLA DÍAZ ===
+- ¿Qué funcionó bien hoy? [basado en los datos reales]
+- ¿Qué bajó o no rindió? [lo que estuvo en 0 o bajó vs ayer]
+- Acción 1 para mañana: [recomendación concreta]
+- Acción 2 para mañana: [recomendación concreta]
+
+=== JORGE FLOREZ ===
+- ¿Qué funcionó bien hoy? [basado en los datos]
+- ¿Qué bajó o no rindió? [lo que bajó]
+- Acción 1 para mañana: [recomendación]
+- Acción 2 para mañana: [recomendación]
+
+=== JP LEGACY GROUP ===
+- ¿Qué funcionó bien hoy? [basado en los datos]
+- ¿Qué bajó o no rindió? [lo que bajó]
+- Acción 1 para mañana: [recomendación]
+- Acción 2 para mañana: [recomendación]
+
+=== OPORTUNIDAD DE LA SEMANA ===
+Basado en los datos de las 3 marcas hoy, ¿qué tipo de contenido deberían priorizar esta semana? [1-2 líneas concretas]`,
+      }],
+    });
+    return content[0]?.text || null;
+  } catch (e) {
+    console.warn('[Social Daily] AI error:', e.message);
+    return null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════
 // DAILY HTML BUILDER
 // ══════════════════════════════════════════════════════════
 
-function buildDailySocialHTML({ date, results }) {
+function buildDailySocialHTML({ date, prevDate, results, aiText }) {
   const now     = nowET();
   const timeStr = now.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:true });
 
-  function dayBrandRow(brand, result) {
-    const d     = result?.data || {};
-    const plats = ['instagram','facebook','youtube'].filter(p => brand.platforms.includes(p));
-    const rows  = plats.map(pfKey => {
-      const pf = d[pfKey];
-      const pm = PLATFORM_META[pfKey];
-      if (!pf) return '';
-      if (pf.postsCount === 0) {
-        return `<tr style="border-bottom:1px solid #111;">
-          <td style="padding:6px 12px;width:100px;color:${pm.color};font-size:11px;font-family:Arial;">${pm.icon} ${pm.name}</td>
-          <td style="padding:6px 12px;color:#444;font-size:11px;font-family:Arial;font-style:italic;">Sin publicaciones ayer</td>
-        </tr>`;
-      }
-      const metrics = pfKey === 'youtube'
-        ? `<span style="color:#888;font-size:10px;">Vistas:</span> <strong style="color:#FFF;">${fmtN(pf.totalViews||0)}</strong>` +
-          `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">Watch:</span> <strong style="color:#FFF;">${pf.watchHours||0}h</strong>`
-        : `<span style="color:#888;font-size:10px;">Alcance:</span> <strong style="color:#FFF;">${fmtN(pf.totalReach||0)}</strong>` +
-          (pf.avgEng != null ? `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">Eng:</span> <strong style="color:#FFF;">${fmtPct(pf.avgEng)}</strong>` : '');
-      const follStr = pfKey === 'instagram' && pf.newFollowers !== null && pf.newFollowers !== undefined
-        ? `&nbsp;&nbsp;<span style="color:#888;font-size:10px;">+Seg:</span> <strong style="color:${pf.newFollowers>=0?'#4CAF50':'#FF4444'};">${fmtNP(pf.newFollowers)}</strong>`
-        : '';
-      return `<tr style="border-bottom:1px solid #111;">
-        <td style="padding:6px 12px;width:100px;color:${pm.color};font-size:11px;font-family:Arial;">${pm.icon} ${pm.name}</td>
-        <td style="padding:6px 12px;font-size:11px;font-family:Arial;">
-          <span style="color:#888;font-size:10px;">Posts:</span> <strong style="color:#FFF;">${pf.postsCount}</strong>
-          &nbsp;&nbsp;${metrics}${follStr}
-        </td>
+  // Day-over-day delta badge
+  function dd(cur, prev) {
+    if (cur == null || prev == null) return '';
+    const diff = (cur||0) - (prev||0);
+    if (diff === 0) return '<span style="color:#444;font-size:9px;font-family:Arial;">▬0</span>';
+    const color = diff > 0 ? '#4CAF50' : '#FF4444';
+    return `<span style="color:${color};font-size:9px;font-family:Arial;">${diff > 0 ? '▲' : '▼'}${fmtN(Math.abs(diff))}</span>`;
+  }
+
+  function mCell(label, value, delta, valColor) {
+    return `<td style="padding:7px 8px;text-align:center;border-right:1px solid #111;">
+      <div style="color:#444;font-size:8px;letter-spacing:1px;font-family:Arial;margin-bottom:2px;">${label}</div>
+      <div style="color:${valColor||'#FFF'};font-size:15px;font-weight:bold;font-family:Arial;line-height:1;">${value}</div>
+      <div style="height:13px;margin-top:2px;">${delta||''}</div>
+    </td>`;
+  }
+
+  function dayPlatformBlock(pfKey, pf, prevpf) {
+    const pm  = PLATFORM_META[pfKey];
+    if (!pf) return '';
+    const isYT = pfKey === 'youtube';
+    const isIG = pfKey === 'instagram';
+
+    // Skip if truly empty
+    const noData = !pf.postsCount && !(pf.totalReach) && !(pf.totalViews)
+                   && !(isIG && pf.newFollowers != null);
+    if (noData) {
+      return `<tr><td style="padding:0 0 6px;">
+        <table width="100%" cellpadding="0" cellspacing="0"
+          style="background:${pm.bg};border:1px solid ${pm.color}22;border-radius:6px;">
+          <tr><td style="padding:6px 10px;">
+            <span style="color:${pm.color};font-size:11px;font-family:Arial;">${pm.icon} ${pm.name}</span>
+            <span style="color:#333;font-size:10px;font-family:Arial;margin-left:8px;font-style:italic;">Sin actividad</span>
+          </td></tr>
+        </table>
+      </td></tr>`;
+    }
+
+    let statsRow = '';
+    if (isYT) {
+      statsRow = `<tr>
+        ${mCell('VISTAS',     fmtN(pf.totalViews||0),  dd(pf.totalViews,  prevpf?.totalViews))}
+        ${mCell('WATCH TIME', `${pf.watchHours||0}h`,  dd(pf.watchHours,  prevpf?.watchHours))}
+        ${mCell('VIDEOS',     pf.postsCount||0,         dd(pf.postsCount,  prevpf?.postsCount))}
       </tr>`;
-    }).join('');
+    } else {
+      const thirdCell = isIG && pf.newFollowers != null
+        ? mCell('NUEVOS SEG', fmtNP(pf.newFollowers), dd(pf.newFollowers, prevpf?.newFollowers), pf.newFollowers >= 0 ? '#4CAF50' : '#FF4444')
+        : mCell('POSTS', pf.postsCount||0, dd(pf.postsCount, prevpf?.postsCount));
+      statsRow = `<tr>
+        ${mCell('ALCANCE', fmtN(pf.totalReach||0), dd(pf.totalReach, prevpf?.totalReach))}
+        ${mCell('ENGAGEMENT', pf.avgEng != null ? fmtPct(pf.avgEng) : '—', dd(pf.avgEng, prevpf?.avgEng))}
+        ${thirdCell}
+      </tr>`;
+    }
+
+    // Engagement breakdown row (IG and FB only)
+    let engRow = '';
+    if (!isYT) {
+      const hasEng = (pf.totalLikes||0) + (pf.totalComments||0) + (pf.totalSaved||0) + (pf.totalShares||0) > 0;
+      if (hasEng) {
+        const savedCell = isIG
+          ? `<td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">🔖 <strong style="color:#FFF;">${fmtN(pf.totalSaved||0)}</strong></div>
+              <div>${dd(pf.totalSaved, prevpf?.totalSaved)}</div>
+            </td>`
+          : '';
+        engRow = `<tr><td colspan="3" style="padding:4px 6px 6px;border-top:1px solid #111;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">❤️ <strong style="color:#FFF;">${fmtN(pf.totalLikes||0)}</strong></div>
+              <div>${dd(pf.totalLikes, prevpf?.totalLikes)}</div>
+            </td>
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">💬 <strong style="color:#FFF;">${fmtN(pf.totalComments||0)}</strong></div>
+              <div>${dd(pf.totalComments, prevpf?.totalComments)}</div>
+            </td>
+            ${savedCell}
+            <td style="padding:3px 0;text-align:center;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(pf.totalShares||0)}</strong></div>
+              <div>${dd(pf.totalShares, prevpf?.totalShares)}</div>
+            </td>
+          </tr></table>
+        </td></tr>`;
+      }
+    }
+
+    return `<tr><td style="padding:0 0 8px;">
+      <table width="100%" cellpadding="0" cellspacing="0"
+        style="background:${pm.bg};border:1px solid ${pm.color}33;border-radius:6px;overflow:hidden;">
+        <tr><td style="padding:6px 10px;background:${pm.color}18;border-bottom:1px solid ${pm.color}33;">
+          <span style="color:${pm.color};font-size:11px;font-weight:bold;letter-spacing:1px;font-family:Arial;">${pm.icon} ${pm.name}</span>
+          <span style="color:#444;font-size:9px;font-family:Arial;margin-left:8px;">${pf.postsCount||0} posts publicados</span>
+        </td></tr>
+        <tr><td><table width="100%" cellpadding="0" cellspacing="0">${statsRow}${engRow}</table></td></tr>
+      </table>
+    </td></tr>`;
+  }
+
+  function dayBrandRow(brand, result) {
+    const d    = result?.data || {};
+    const prev = result?.prev || {};
+    const plats = ['instagram','facebook','youtube'].filter(p => brand.platforms.includes(p));
+    const platformBlocks = plats.map(pfKey => dayPlatformBlock(pfKey, d[pfKey], prev[pfKey])).join('');
 
     return `
     <tr><td style="padding:0 0 10px;">
@@ -1051,30 +1233,61 @@ function buildDailySocialHTML({ date, results }) {
       style="background:${brand.bg};border:1px solid ${brand.border};border-radius:8px;overflow:hidden;">
       <tr><td style="padding:9px 14px;background:linear-gradient(90deg,${brand.color}22,${brand.color2}11,transparent);
         border-bottom:1px solid ${brand.border};">
-        <span style="font-size:13px;font-weight:bold;font-family:Arial;
+        <span style="font-size:14px;font-weight:bold;font-family:Arial;
           background:linear-gradient(90deg,${brand.color},${brand.color2});
           -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
           ${brand.icon} ${brand.name}
         </span>
       </td></tr>
-      <tr><td><table width="100%" cellpadding="0" cellspacing="0">${rows}</table></td></tr>
+      <tr><td style="padding:10px 12px;">
+      <table width="100%" cellpadding="0" cellspacing="0">${platformBlocks}</table>
+      </td></tr>
     </table>
     </td></tr>`;
   }
 
-  const brandRows    = BRANDS.map(bc => dayBrandRow(bc, results[bc.key])).join('');
-  const [y, m, d]    = date.split('-').map(Number);
-  const dt           = new Date(Date.UTC(y, m-1, d));
+  // Per-brand AI analysis block
+  function dailyAiBlock(text) {
+    if (!text) return '';
+    const html = text
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/=== (PAOLA[^=]*)===/g,        '<strong style="color:#FF6B9D;font-size:12px;letter-spacing:1px;">👩 $1</strong>')
+      .replace(/=== (JORGE[^=]*)===/g,        '<strong style="color:#4FC3F7;font-size:12px;letter-spacing:1px;">👨 $1</strong>')
+      .replace(/=== (JP LEGACY[^=]*)===/g,    '<strong style="color:#C9A84C;font-size:12px;letter-spacing:1px;">🏢 $1</strong>')
+      .replace(/=== (OPORTUNIDAD[^=]*)===/g,  '<strong style="color:#818CF8;font-size:12px;letter-spacing:1px;">🌐 $1</strong>')
+      .replace(/- ¿Qué funcionó[^\n]*/g,      m => `<span style="color:#4CAF50;">${m}</span>`)
+      .replace(/- ¿Qué bajó[^\n]*/g,          m => `<span style="color:#FF9800;">${m}</span>`)
+      .replace(/- Acción \d[^\n]*/g,           m => `<span style="color:#FFD700;">${m}</span>`)
+      .replace(/•\s+/g, '&bull;&nbsp;')
+      .replace(/\n/g, '<br>');
+    return `
+    <tr><td style="height:14px;"></td></tr>
+    <tr><td>
+    <table width="100%" cellpadding="0" cellspacing="0"
+      style="background:#060610;border:1px solid #1A1A2A;border-radius:8px;overflow:hidden;">
+      <tr><td style="padding:10px 14px;background:#0A0A1A;border-bottom:1px solid #1A1A2A;">
+        <span style="color:#818CF8;font-size:11px;font-weight:bold;letter-spacing:2px;font-family:Arial;">🤖 ANÁLISIS CLAUDE AI — POR MARCA</span>
+      </td></tr>
+      <tr><td style="padding:14px 16px;color:#CCC;font-size:11px;line-height:1.9;font-family:Arial;">${html}</td></tr>
+    </table>
+    </td></tr>`;
+  }
+
+  const brandRows      = BRANDS.map(bc => dayBrandRow(bc, results[bc.key])).join('');
+  const [yr, mo, dy]   = date.split('-').map(Number);
+  const dt             = new Date(Date.UTC(yr, mo-1, dy));
 
   const body = `
     <tr><td style="padding:24px 0 16px;text-align:center;border-bottom:2px solid #C9A84C;">
       <div style="font-size:10px;letter-spacing:4px;color:#C9A84C;text-transform:uppercase;font-family:Arial;margin-bottom:5px;">JP LEGACY GROUP</div>
       <div style="font-size:20px;font-weight:bold;color:#FFF;font-family:Arial;letter-spacing:1px;">📱 Reporte Diario de Redes</div>
-      <div style="font-size:12px;color:#AAA;font-family:Arial;margin-top:5px;">${DAYS_ES[dt.getUTCDay()]} ${d} de ${MONTHS_ES[m-1]}</div>
-      <div style="font-size:10px;color:#333;font-family:Arial;margin-top:3px;">Generado ${timeStr} ET</div>
+      <div style="font-size:12px;color:#AAA;font-family:Arial;margin-top:5px;">${DAYS_ES[dt.getUTCDay()]} ${dy} de ${MONTHS_ES[mo-1]}</div>
+      <div style="font-size:10px;color:#555;font-family:Arial;margin-top:2px;">vs ${shortDateES(prevDate)} · Generado ${timeStr} ET</div>
     </td></tr>
     <tr><td style="height:16px;"></td></tr>
     ${brandRows}
+    ${dailyAiBlock(aiText)}
+    <tr><td style="height:20px;"></td></tr>
     <tr><td style="text-align:center;padding:12px;border-top:1px solid #1A1A1A;">
       <div style="color:#C9A84C;font-size:11px;font-weight:bold;letter-spacing:2px;font-family:Arial;">JP LEGACY GROUP</div>
       <div style="color:#333;font-size:10px;font-family:Arial;margin-top:3px;">
@@ -1096,7 +1309,8 @@ ${body}
 async function sendDailySocialReport() {
   console.log('[Social Daily] Iniciando reporte diario de redes…');
   const data    = await buildDailySocialData();
-  const html    = buildDailySocialHTML(data);
+  const aiText  = await generateDailyAI(data.results, data.date);
+  const html    = buildDailySocialHTML({ ...data, aiText });
   const [y, m, d] = data.date.split('-').map(Number);
   const dt      = new Date(Date.UTC(y, m-1, d));
   const subject = `JP Legacy — Reporte Diario de Redes · ${DAYS_ES[dt.getUTCDay()]} ${d} ${MONTHS_ES[m-1].slice(0,3)}`;
