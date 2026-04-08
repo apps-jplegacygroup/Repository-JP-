@@ -159,7 +159,7 @@ async function fetchPipelineTasks() {
   const tasks = [];
   let offset = null;
   const optFields = [
-    'name', 'assignee.name', 'tags.name',
+    'name', 'assignee.name', 'tags',
     'due_on', 'created_at', 'modified_at', 'completed', 'completed_at',
     'custom_fields.name', 'custom_fields.display_value',
     'notes', 'memberships.section.name',
@@ -186,6 +186,8 @@ async function fetchPipelineTasks() {
     ? tasks[0].memberships[0].section && tasks[0].memberships[0].section.name
     : 'NO_MEMBERSHIPS';
   console.log(`[marketingReport] Pipeline: ${tasks.length} tareas. Primera sección: ${JSON.stringify(firstStage)}`);
+  console.log('[DEBUG] tags sample task 0:', JSON.stringify(tasks[0]?.tags));
+  console.log('[DEBUG] tags sample task 1:', JSON.stringify(tasks[1]?.tags));
   return tasks;
 }
 
@@ -236,15 +238,12 @@ function getTaskStage(task) {
 
 /** Classify accounts from task tags */
 function getTaskAccounts(task) {
+  const tagNames = (task.tags || []).map(t => (t.name || '').toLowerCase());
   const accounts = [];
-  if (!task.tags || task.tags.length === 0) return accounts;
-  for (const tag of task.tags) {
-    const name = (tag.name || '').toLowerCase();
-    if (name.includes('paola')) accounts.push('PAOLA');
-    if (name.includes('jorge')) accounts.push('JORGE');
-    if (name.includes('jp legacy') || name.includes('jplegacy')) accounts.push('JP_LEGACY');
-  }
-  return [...new Set(accounts)];
+  if (tagNames.some(t => t.includes('paola'))) accounts.push('PAOLA');
+  if (tagNames.some(t => t.includes('jorge'))) accounts.push('JORGE');
+  if (tagNames.some(t => t.includes('jp legacy') || t.includes('jplegacy'))) accounts.push('JP_LEGACY');
+  return accounts;
 }
 
 /** Extract platform tags (non-account tags) */
@@ -253,6 +252,7 @@ function getTaskPlatformTags(task) {
   const accountKeywords = ['paola', 'jorge', 'jp legacy', 'jplegacy'];
   return task.tags
     .map(t => t.name || '')
+    .filter(name => name.length > 0)
     .filter(name => {
       const lower = name.toLowerCase();
       return !accountKeywords.some(kw => lower.includes(kw));
