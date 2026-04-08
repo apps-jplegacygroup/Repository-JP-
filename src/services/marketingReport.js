@@ -362,15 +362,21 @@ function enrichPipelineTask(task) {
 // CROSS-REFERENCE: TEAM OVERVIEW ↔ PIPELINE
 // ══════════════════════════════════════════════════════════════════════════════
 
-const VIDEO_PREFIXES = ['INICIO/', 'PROCESO/', 'FIN/'];
+// Accept both slash and dash separators: "INICIO/", "INICIO-", etc.
+const VIDEO_PREFIXES = ['INICIO/', 'INICIO-', 'PROCESO/', 'PROCESO-', 'FIN/', 'FIN-'];
 
 /** Returns { prefix, videoName } if task name starts with a video prefix, else null */
 function parseVideoTask(taskName) {
   if (!taskName) return null;
+  const upper = taskName.toUpperCase();
   for (const prefix of VIDEO_PREFIXES) {
-    if (taskName.toUpperCase().startsWith(prefix)) {
+    if (upper.startsWith(prefix)) {
       const videoName = taskName.slice(prefix.length).trim();
-      if (videoName.length > 0) return { prefix: prefix.slice(0, -1), videoName };
+      if (videoName.length > 0) {
+        // Normalize prefix to canonical form (INICIO/PROCESO/FIN) for comparisons
+        const canonical = prefix.replace(/[-/]$/, '');
+        return { prefix: canonical, videoName };
+      }
     }
   }
   return null;
@@ -453,18 +459,21 @@ function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today, vid
     return lower === memberName.toLowerCase();
   };
 
-  // Only tasks with due_on within current week (Mon-Sun)
-  const myTasks = tasks.filter(t => isMatch(t) && t.due_on && isInRange(t.due_on, weekStart, weekEnd));
+  // All tasks for this person (no week filter — we apply week logic per metric below)
+  const myTasks = tasks.filter(t => isMatch(t));
 
+  // Completed THIS week: use completed_at to determine week membership
   const completedWeek = myTasks.filter(t =>
     t.completed && t.completed_at &&
     isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
   ).length;
 
+  // In-progress TODAY: due_on = today and not yet completed
   const inProgressToday = myTasks.filter(t =>
     !t.completed && t.due_on === today
   ).length;
 
+  // Pending TODAY: overdue (due_on < today) and not completed
   const pendingToday = myTasks.filter(t =>
     !t.completed && t.due_on && t.due_on < today
   ).length;
@@ -666,8 +675,29 @@ async function buildDailyData() {
   }
   console.log(`[marketingReport] rawPipeline=${rawPipeline.length} rawTeam=${rawTeam.length}`);
 
+  // ── DEBUG: log raw data shape ─────────────────────────────────────────────
+  if (rawPipeline.length > 0) {
+    const t0 = rawPipeline[0];
+    console.log('[DEBUG] rawPipeline[0].name:', t0.name?.slice(0, 60));
+    console.log('[DEBUG] rawPipeline[0].memberships:', JSON.stringify(t0.memberships?.slice(0, 1)));
+    console.log('[DEBUG] rawPipeline[0] section via getTaskStage:', getTaskStage(t0));
+  } else {
+    console.log('[DEBUG] rawPipeline is EMPTY — no pipeline tasks fetched');
+  }
+  if (rawTeam.length > 0) {
+    const r0 = rawTeam[0];
+    console.log('[DEBUG] rawTeam[0].name:', r0.name?.slice(0, 60));
+    console.log('[DEBUG] rawTeam[0].due_on:', r0.due_on);
+    console.log('[DEBUG] rawTeam[0].assignee:', r0.assignee?.name || r0.assignee);
+    console.log('[DEBUG] rawTeam[0].completed:', r0.completed);
+  } else {
+    console.log('[DEBUG] rawTeam is EMPTY — no team tasks fetched');
+  }
+  console.log('[DEBUG] weekStart:', weekStart, 'weekEnd:', weekEnd, 'today:', today);
+
   // ── Enrich pipeline tasks ─────────────────────────────────────────────────
   const tasks = rawPipeline.map(enrichPipelineTask);
+  console.log('[DEBUG] tasks after enrich:', tasks.length);
 
   // ── Build stages map ──────────────────────────────────────────────────────
   const stagesMap = {};
@@ -681,6 +711,9 @@ async function buildDailyData() {
       stagesMap['Other'].push(task);
     }
   }
+  console.log('[DEBUG] stages distribution:', JSON.stringify(
+    Object.fromEntries(Object.entries(stagesMap).map(([k, v]) => [k, v.length]).filter(([, n]) => n > 0))
+  ));
 
   const stageCounts = {};
   for (const [s, arr] of Object.entries(stagesMap)) stageCounts[s] = arr.length;
@@ -803,8 +836,14 @@ async function buildDailyData() {
   }
 
   // ── Team metrics ──────────────────────────────────────────────────────────
+  console.log('[DEBUG] teamTasksNormalized count:', teamTasksNormalized.length);
+  if (teamTasksNormalized.length > 0) {
+    const sample = teamTasksNormalized.slice(0, 3).map(t => `${t.assignee}|due:${t.due_on}|done:${t.completed}`);
+    console.log('[DEBUG] teamTasks sample:', sample.join(' // '));
+  }
   const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasksNormalized, weekStart, weekEnd, today, videoTasks);
   const karenMetrics = calcTeamMemberMetrics('karen', teamTasksNormalized, weekStart, weekEnd, today, videoTasks);
+  console.log('[DEBUG] nicole completedWeek:', nicoleMetrics.completedWeek, 'karen completedWeek:', karenMetrics.completedWeek);
 
   const mostProductiveThisWeek = nicoleMetrics.completedWeek >= karenMetrics.completedWeek
     ? 'Nicole Zapata'
