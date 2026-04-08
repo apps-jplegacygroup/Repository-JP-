@@ -27,7 +27,7 @@ const PIPELINE_STAGES = [
 
 const NON_STAGNATED_STAGES = ['Scheduled/Publlished', 'Archive', 'Backup'];
 
-const CADENCE_GOALS = { PAOLA: 5, JORGE: 4, JP_LEGACY: 7 };
+const CADENCE_GOALS = { Paola: 5, Jorge: 4, 'JP Legacy': 7 };
 
 const RECIPIENTS = [
   'jorgeflorez@jplegacygroup.com',
@@ -188,6 +188,7 @@ async function fetchPipelineTasks() {
   console.log(`[marketingReport] Pipeline: ${tasks.length} tareas. Primera sección: ${JSON.stringify(firstStage)}`);
   console.log('[DEBUG] tags sample task 0:', JSON.stringify(tasks[0]?.tags));
   console.log('[DEBUG] tags sample task 1:', JSON.stringify(tasks[1]?.tags));
+  console.log('[DEBUG] task notes sample:', tasks[0]?.notes?.substring(0, 200));
   return tasks;
 }
 
@@ -251,11 +252,17 @@ function getTaskAccounts(task) {
   // "& jp" covers "Paola & JP", "Jorge & JP"; "jp –" covers "– JP – 2026"; "jp legacy" is explicit
   const hasJP = name.includes('& jp') || /–\s*jp\s*–/.test(name) || name.includes('jp legacy') || name.includes('jplegacy');
 
-  if (hasPaola) accounts.push('PAOLA');
-  if (hasJorge) accounts.push('JORGE');
-  if (hasJP) accounts.push('JP_LEGACY');
+  if (hasPaola) accounts.push('Paola');
+  if (hasJorge) accounts.push('Jorge');
+  if (hasJP) accounts.push('JP Legacy');
 
   return accounts;
+}
+
+/** Shorten long task names to first two segments split by " – " */
+function shortName(name) {
+  const parts = (name || '').split('–');
+  return parts.slice(0, 2).join('–').trim();
 }
 
 /** Extract platform tags (non-account tags) */
@@ -741,9 +748,9 @@ async function buildDailyData() {
 
   // ── Build accounts ────────────────────────────────────────────────────────
   const accountDefs = {
-    PAOLA: { name: 'Paola Díaz' },
-    JORGE: { name: 'Jorge Florez' },
-    JP_LEGACY: { name: 'JP Legacy Group' },
+    Paola: { name: 'Paola Díaz' },
+    Jorge: { name: 'Jorge Florez' },
+    'JP Legacy': { name: 'JP Legacy Group' },
   };
 
   const accounts = {};
@@ -943,9 +950,9 @@ async function buildWeeklyData() {
   const pipeline = { stages: stagesMap, stageCounts, activeTotal };
 
   const accountDefs = {
-    PAOLA: { name: 'Paola Díaz' },
-    JORGE: { name: 'Jorge Florez' },
-    JP_LEGACY: { name: 'JP Legacy Group' },
+    Paola: { name: 'Paola Díaz' },
+    Jorge: { name: 'Jorge Florez' },
+    'JP Legacy': { name: 'JP Legacy Group' },
   };
 
   const accounts = {};
@@ -1060,9 +1067,9 @@ async function buildMonthlyData() {
   const pipeline = { stages: stagesMap, stageCounts, activeTotal };
 
   const accountDefs = {
-    PAOLA: { name: 'Paola Díaz' },
-    JORGE: { name: 'Jorge Florez' },
-    JP_LEGACY: { name: 'JP Legacy Group' },
+    Paola: { name: 'Paola Díaz' },
+    Jorge: { name: 'Jorge Florez' },
+    'JP Legacy': { name: 'JP Legacy Group' },
   };
 
   const accounts = {};
@@ -1168,9 +1175,9 @@ function buildDailyText(data) {
 
   // ── Accounts ──────────────────────────────────────────────────────────────
   const accountOrder = [
-    { key: 'PAOLA', label: '👤 PAOLA DÍAZ' },
-    { key: 'JORGE', label: '👤 JORGE FLOREZ' },
-    { key: 'JP_LEGACY', label: '🏢 JP LEGACY GROUP' },
+    { key: 'Paola', label: '👤 PAOLA DÍAZ' },
+    { key: 'Jorge', label: '👤 JORGE FLOREZ' },
+    { key: 'JP Legacy', label: '🏢 JP LEGACY GROUP' },
   ];
 
   for (const { key, label } of accountOrder) {
@@ -1249,8 +1256,8 @@ function buildDailyText(data) {
     if (stageTasks.length === 0) continue;
     lines.push(`  — ${s} —`);
     for (const t of stageTasks) {
-      lines.push(`  ${t.name}`);
-      lines.push(`    Cuenta: ${t.accounts.join(', ') || '—'}`);
+      lines.push(`  ${shortName(t.name)}`);
+      lines.push(`    Cuenta: ${t.accounts.join(' + ') || '—'}`);
       lines.push(`    Estado producción: ${estadoIcon(t.estadoProduccion)}`);
       if (t.responsableProduccion) lines.push(`    Responsable: ${t.responsableProduccion}`);
       if (t.links.dropbox) lines.push(`    🔗 ${t.links.dropbox}`);
@@ -1266,9 +1273,9 @@ function buildDailyText(data) {
     lines.push('✅ Sin videos estancados hoy');
   } else {
     for (const t of data.stagnated) {
-      lines.push(t.name);
+      lines.push(shortName(t.name));
       lines.push(`  Stage: ${t.stage} | Lleva: ${t.days_in_stage} días`);
-      lines.push(`  Cuenta: ${t.accounts.join(', ') || '—'}`);
+      lines.push(`  Cuenta: ${t.accounts.join(' + ') || '—'}`);
       lines.push(`  Estado producción: ${estadoIcon(t.estadoProduccion)}`);
       const blockedTags = (t.tags || []).filter(tag => tag.toLowerCase().includes('faltan'));
       if (blockedTags.length > 0) lines.push(`  Bloqueado por: ${blockedTags.join(', ')}`);
@@ -1299,9 +1306,9 @@ function buildDailyText(data) {
   lines.push('');
   lines.push('             Meta    Real    Estado');
   const cadenceRows = [
-    { label: 'Paola', key: 'PAOLA' },
-    { label: 'Jorge', key: 'JORGE' },
-    { label: 'JP Legacy', key: 'JP_LEGACY' },
+    { label: 'Paola', key: 'Paola' },
+    { label: 'Jorge', key: 'Jorge' },
+    { label: 'JP Legacy', key: 'JP Legacy' },
   ];
   for (const row of cadenceRows) {
     const c = data.cadence[row.key];
@@ -1437,9 +1444,9 @@ function buildDailyHTML(data) {
 
   // Accounts
   const accountOrder = [
-    { key: 'PAOLA', icon: '👤', label: 'Paola Díaz' },
-    { key: 'JORGE', icon: '👤', label: 'Jorge Florez' },
-    { key: 'JP_LEGACY', icon: '🏢', label: 'JP Legacy Group' },
+    { key: 'Paola', icon: '👤', label: 'Paola Díaz' },
+    { key: 'Jorge', icon: '👤', label: 'Jorge Florez' },
+    { key: 'JP Legacy', icon: '🏢', label: 'JP Legacy Group' },
   ];
 
   for (const { key, icon, label } of accountOrder) {
@@ -1498,9 +1505,9 @@ function buildDailyHTML(data) {
   } else {
     for (const t of data.stagnated) {
       sc += `<div style="background:#2A1800;border-left:3px solid #FF8800;padding:8px 10px;margin-bottom:6px;font-size:13px;border-radius:2px;">`;
-      sc += `<strong style="color:#FF8800;">${t.name}</strong>`;
+      sc += `<strong style="color:#FF8800;">${shortName(t.name)}</strong>`;
       sc += `<br><span style="color:#AAA;">Stage: ${t.stage} | ${t.days_in_stage} días | ${t.assignee || '—'}</span>`;
-      if (t.accounts.length > 0) sc += `<br><span style="color:#888;">Cuenta: ${t.accounts.join(', ')}</span>`;
+      if (t.accounts.length > 0) sc += `<br><span style="color:#888;">Cuenta: ${t.accounts.join(' + ')}</span>`;
       if (t.links.dropbox) sc += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
       sc += `</div>`;
     }
@@ -1524,7 +1531,7 @@ function buildDailyHTML(data) {
   let cad = htmlSectionTitle('📊 Cadencia Semanal');
   cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
   cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
-  const cadenceRows = [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }];
+  const cadenceRows = [{ label: 'Paola', key: 'Paola' }, { label: 'Jorge', key: 'Jorge' }, { label: 'JP Legacy', key: 'JP Legacy' }];
   for (const row of cadenceRows) {
     const c = data.cadence[row.key];
     const pct = c.goal > 0 ? c.actual / c.goal : 0;
@@ -1595,7 +1602,7 @@ function buildWeeklyHTML(data) {
   let cad = htmlSectionTitle('📊 Cadencia de la Semana');
   cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
   cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
-  for (const row of [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }]) {
+  for (const row of [{ label: 'Paola', key: 'Paola' }, { label: 'Jorge', key: 'Jorge' }, { label: 'JP Legacy', key: 'JP Legacy' }]) {
     const c = data.cadence[row.key];
     const pct = c.goal > 0 ? c.actual / c.goal : 0;
     const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
@@ -1654,7 +1661,7 @@ function buildMonthlyHTML(data) {
   let cad = htmlSectionTitle('📊 Cadencia Mensual');
   cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
   cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
-  for (const row of [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }]) {
+  for (const row of [{ label: 'Paola', key: 'Paola' }, { label: 'Jorge', key: 'Jorge' }, { label: 'JP Legacy', key: 'JP Legacy' }]) {
     const c = data.cadence[row.key];
     const pct = c.goal > 0 ? c.actual / c.goal : 0;
     const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
