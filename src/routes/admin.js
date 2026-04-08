@@ -119,9 +119,8 @@ router.post('/send-report', async (req, res) => {
 // GET /admin/preview-daily-social — build daily social HTML without sending email
 router.get('/preview-daily-social', async (req, res) => {
   try {
-    const { html, subject } = await previewDailySocialReport();
+    const { html } = await previewDailySocialReport();
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('X-Subject', subject);
     return res.send(html);
   } catch (err) {
     console.error('[Admin] preview-daily-social error:', err.message);
