@@ -1106,7 +1106,7 @@ async function generateDailyAI(results, date) {
 
     const { content } = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 900,
+      max_tokens: 1500,
       messages: [{
         role: 'user',
         content: `Eres estratega de redes sociales para JP Legacy Group (inmobiliaria en Florida).
