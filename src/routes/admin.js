@@ -205,10 +205,12 @@ router.get('/debug-metricool', async (req, res) => {
   const tlMetrics = ['impressions','reach','profileVisits','websiteClicks','followersCount',
     'followers','engagement','likes','comments','saved','shares','reachStories','impressionsStories',
     'views','estimatedMinutesWatched','subscribersGained','totalSubscribers'];
-  const tlIG = {}, tlYT = {};
+  const tlIG = {}, tlIGpost = {}, tlYT = {};
   await Promise.all(tlMetrics.map(async m => {
-    tlIG[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram' });
-    tlYT[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'youtube' });
+    // Instagram requires subject param — try both 'account' and 'post'
+    tlIG[m]     = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram', subject: 'account' });
+    tlIGpost[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram', subject: 'post' });
+    tlYT[m]     = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'youtube' });
   }));
 
   const [
@@ -242,8 +244,9 @@ router.get('/debug-metricool', async (req, res) => {
 
   return res.json({
     brand, blogId, date,
-    timelines_instagram: tlIG,
-    timelines_youtube:   tlYT,
+    timelines_instagram_account: tlIG,
+    timelines_instagram_post:    tlIGpost,
+    timelines_youtube:           tlYT,
     overview_v2:         overview,
     overview_v1:         overviewV1,
     stories_v2:          stories,
