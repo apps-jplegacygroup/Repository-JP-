@@ -179,6 +179,84 @@ router.get('/debug-yt-timeline', async (req, res) => {
   }
 });
 
+// GET /admin/debug-metricool?brand=paola&date=YYYY-MM-DD — full Metricool API discovery for a brand
+router.get('/debug-metricool', async (req, res) => {
+  const axios = require('axios');
+  const token  = process.env.METRICOOL_API_TOKEN;
+  const userId = process.env.METRICOOL_USER_ID;
+  const brand  = req.query.brand || 'paola';
+  const envMap = { paola: 'METRICOOL_BLOG_ID_PAOLA', jorge: 'METRICOOL_BLOG_ID_JORGE', jp_legacy: 'METRICOOL_BLOG_ID_JP_LEGACY' };
+  const blogId = process.env[envMap[brand]];
+  if (!blogId) return res.status(400).json({ error: `No blogId for "${brand}"` });
+
+  const now  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const yest = new Date(now); yest.setDate(now.getDate() - 1);
+  const date = req.query.date || yest.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  const from = `${date}T00:00:00`, to = `${date}T23:59:59`;
+  const base = { userId, blogId };
+
+  const http = axios.create({ baseURL: 'https://app.metricool.com/api', headers: { 'X-Mc-Auth': token }, timeout: 20000 });
+  const tryGet = async (url, params) => {
+    try { const { data } = await http.get(url, { params }); return data; }
+    catch (e) { return { _error: e.response?.status, _msg: e.response?.data?.detail || e.message }; }
+  };
+
+  // Timeline metrics to probe — one call per metric
+  const tlMetrics = ['impressions','reach','profileVisits','websiteClicks','followersCount',
+    'followers','engagement','likes','comments','saved','shares','reachStories','impressionsStories',
+    'views','estimatedMinutesWatched','subscribersGained','totalSubscribers'];
+  const tlIG = {}, tlYT = {};
+  await Promise.all(tlMetrics.map(async m => {
+    tlIG[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram' });
+    tlYT[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'youtube' });
+  }));
+
+  const [
+    overview,    overviewV1,
+    stories,     storiesV1,
+    audience,    audienceIG,
+    reelsRaw,    postsRaw,
+    ytPosts,     fbPosts,
+    igV1Posts,   igV1Reels,
+  ] = await Promise.all([
+    // Overview endpoints (try both v1 and v2 patterns)
+    tryGet('/v2/analytics/overview',   { ...base, from, to }),
+    tryGet('/stats/overview',          { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    // Stories
+    tryGet('/v2/analytics/stories',    { ...base, from, to }),
+    tryGet('/stats/instagram/stories', { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    // Audience
+    tryGet('/v2/analytics/audience',   { ...base }),
+    tryGet('/v2/analytics/audience',   { ...base, network: 'instagram' }),
+    // Instagram reels & posts (v1 format we know works)
+    tryGet('/stats/instagram/reels',   { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    tryGet('/stats/instagram/posts',   { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    // YouTube posts
+    tryGet('/v2/analytics/posts/youtube', { ...base, from, to, postsType: 'publishedInRange' }),
+    // Facebook posts
+    tryGet('/stats/facebook/posts',    { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    // Instagram stats (v1)
+    tryGet('/stats/instagram/posts',   { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+    tryGet('/stats/instagram/reels',   { ...base, start: date.replace(/-/g,''), end: date.replace(/-/g,'') }),
+  ]);
+
+  return res.json({
+    brand, blogId, date,
+    timelines_instagram: tlIG,
+    timelines_youtube:   tlYT,
+    overview_v2:         overview,
+    overview_v1:         overviewV1,
+    stories_v2:          stories,
+    stories_v1:          storiesV1,
+    audience_v2:         audience,
+    audience_v2_ig:      audienceIG,
+    ig_reels:            reelsRaw,
+    ig_posts:            postsRaw,
+    yt_posts:            ytPosts,
+    fb_posts:            fbPosts,
+  });
+});
+
 // GET /admin/debug-fub?date=YYYY-MM-DD — diagnose FUB lead fetch for a specific date
 router.get('/debug-fub', async (req, res) => {
   const date = req.query.date || yesterdayKeyET();
