@@ -278,6 +278,17 @@ function daysInStage(task) {
   return Math.floor((Date.now() - new Date(task.modified_at)) / (1000 * 60 * 60 * 24));
 }
 
+/** Extract a custom field value by name (case-insensitive) from raw Asana task */
+function getCF(task, fieldName) {
+  if (!task.custom_fields) return null;
+  const f = task.custom_fields.find(cf => cf.name && cf.name.toLowerCase() === fieldName.toLowerCase());
+  if (!f) return null;
+  if (f.enum_value && f.enum_value.name) return f.enum_value.name;
+  if (f.display_value) return f.display_value;
+  if (f.text_value) return f.text_value;
+  return null;
+}
+
 /** Enrich a pipeline task with derived fields */
 function enrichPipelineTask(task) {
   const stage = getTaskStage(task);
@@ -286,6 +297,35 @@ function enrichPipelineTask(task) {
   const platforms = getTaskPlatformTags(task);
   const days = daysInStage(task);
   const stagnated = days > 3 && !NON_STAGNATED_STAGES.includes(stage);
+
+  // Fecha de publicación — determines if priority/type fields are real
+  const fechaPublicacion = getCF(task, 'Fecha de publicación') ||
+                           getCF(task, 'fecha de publicacion') ||
+                           getCF(task, 'Hora de publicación') || null;
+  const hasFechaPublicacion = !!(fechaPublicacion && fechaPublicacion.trim());
+
+  // Priority only valid when fechaPublicacion is set
+  const prioridadRaw = getCF(task, 'Prioridad') || getCF(task, 'prioridad') || null;
+  const prioridad = hasFechaPublicacion ? prioridadRaw : null;
+  const urgente = hasFechaPublicacion &&
+    !!(prioridadRaw && prioridadRaw.toLowerCase().includes('urgent')) &&
+    !task.completed;
+
+  // Tipo only valid when fechaPublicacion is set
+  const tipoRaw = getCF(task, 'Tipo de contenido') || getCF(task, 'Tipo') || null;
+  const tipo = hasFechaPublicacion ? tipoRaw : null;
+
+  // Delivery margin: due_on should be >= 2 days before fechaPublicacion
+  let margenDias = null;
+  let entregaEnRiesgo = false;
+  if (hasFechaPublicacion && task.due_on) {
+    const pubDate = parseDate(fechaPublicacion.slice(0, 10));
+    const dueDate = parseDate(task.due_on);
+    if (pubDate && dueDate) {
+      margenDias = Math.round((pubDate - dueDate) / 86400000);
+      entregaEnRiesgo = margenDias < 2;
+    }
+  }
 
   return {
     gid: task.gid,
@@ -304,14 +344,108 @@ function enrichPipelineTask(task) {
     links,
     days_in_stage: days,
     stagnated,
+    fechaPublicacion: hasFechaPublicacion ? fechaPublicacion : null,
+    prioridad,
+    urgente,
+    tipo,
+    margenDias,
+    entregaEnRiesgo,
+    // Cross-reference fields — set by crossReferenceVideos()
+    estadoProduccion: null,
+    responsableProduccion: null,
+    fechaEstadoProduccion: null,
+    completadoEnEquipo: false,
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CROSS-REFERENCE: TEAM OVERVIEW ↔ PIPELINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+const VIDEO_PREFIXES = ['INICIO/', 'PROCESO/', 'FIN/'];
+
+/** Returns { prefix, videoName } if task name starts with a video prefix, else null */
+function parseVideoTask(taskName) {
+  if (!taskName) return null;
+  for (const prefix of VIDEO_PREFIXES) {
+    if (taskName.toUpperCase().startsWith(prefix)) {
+      const videoName = taskName.slice(prefix.length).trim();
+      if (videoName.length > 0) return { prefix: prefix.slice(0, -1), videoName };
+    }
+  }
+  return null;
+}
+
+/** Count words in common between two strings (case-insensitive) */
+function commonWords(a, b) {
+  const stopWords = new Set(['de', 'la', 'el', 'en', 'y', 'a', 'the', 'of', 'and', 'for']);
+  const wordsA = new Set(
+    a.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w))
+  );
+  return b.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w) && wordsA.has(w)).length;
+}
+
+/**
+ * Cross-reference Team Overview video tasks with Pipeline tasks.
+ * Mutates pipelineTasks in place to add estadoProduccion fields.
+ * Returns enriched teamVideoTasks with pipelineMatch info.
+ */
+function crossReferenceVideos(teamTasks, pipelineTasks) {
+  const videoTasks = [];
+
+  for (const tt of teamTasks) {
+    const parsed = parseVideoTask(tt.name);
+    if (!parsed) continue; // Not a video task — skip entirely
+
+    // Find best matching pipeline task
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const pt of pipelineTasks) {
+      const score = commonWords(parsed.videoName, pt.name);
+      if (score >= 3 && score > bestScore) {
+        bestScore = score;
+        bestMatch = pt;
+      }
+    }
+
+    const videoEntry = {
+      teamTask: tt,
+      prefix: parsed.prefix,
+      videoName: parsed.videoName,
+      assignee: tt.assignee || null,
+      completed: tt.completed || false,
+      completedAt: tt.completed_at ? tt.completed_at.slice(0, 10) : null,
+      pipelineMatch: bestMatch ? bestMatch.gid : null,
+      pipelineMatchName: bestMatch ? bestMatch.name : null,
+    };
+
+    videoTasks.push(videoEntry);
+
+    // Enrich pipeline task if matched
+    if (bestMatch) {
+      // Prefer higher-priority states: FIN > PROCESO > INICIO
+      const priority = { FIN: 3, PROCESO: 2, INICIO: 1 };
+      const current = priority[bestMatch.estadoProduccion] || 0;
+      if ((priority[parsed.prefix] || 0) >= current) {
+        bestMatch.estadoProduccion = parsed.prefix;
+        bestMatch.responsableProduccion = tt.assignee || null;
+        bestMatch.fechaEstadoProduccion = tt.completed_at
+          ? tt.completed_at.slice(0, 10)
+          : tt.created_at ? tt.created_at.slice(0, 10) : null;
+        bestMatch.completadoEnEquipo = tt.completed || false;
+      }
+    }
+  }
+
+  return videoTasks;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TEAM METRICS CALCULATOR
 // ══════════════════════════════════════════════════════════════════════════════
 
-function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today) {
+function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today, videoTasks) {
   const isMatch = (t) => {
     if (!t.assignee) return false;
     const lower = (t.assignee || '').toLowerCase();
@@ -319,7 +453,8 @@ function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today) {
     return lower === memberName.toLowerCase();
   };
 
-  const myTasks = tasks.filter(t => isMatch(t));
+  // Only tasks with due_on within current week (Mon-Sun)
+  const myTasks = tasks.filter(t => isMatch(t) && t.due_on && isInRange(t.due_on, weekStart, weekEnd));
 
   const completedWeek = myTasks.filter(t =>
     t.completed && t.completed_at &&
@@ -334,30 +469,35 @@ function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today) {
     !t.completed && t.due_on && t.due_on < today
   ).length;
 
-  // On-time rate: completed tasks with due_on where completed_at date <= due_on
+  // On-time rate: completed tasks where completed_at <= due_on
   const completedWithDue = myTasks.filter(t => t.completed && t.completed_at && t.due_on);
   const onTime = completedWithDue.filter(t => t.completed_at.slice(0, 10) <= t.due_on);
   const onTimeRate = completedWithDue.length > 0
     ? Math.round((onTime.length / completedWithDue.length) * 100)
     : 0;
 
-  // Streak: consecutive days (backwards from yesterday) with >= 1 completion
-  let streak = 0;
-  const todayDate = parseDate(today);
-  let checkDate = new Date(todayDate);
-  checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+  // Urgentes: non-completed tasks with 'urgent' priority (only from tasks with due in week)
+  const urgentesActivas = myTasks.filter(t => {
+    if (t.completed) return false;
+    const cf = t.custom_fields || [];
+    const prioridad = cf.find && cf.find(f => f.name && f.name.toLowerCase() === 'prioridad');
+    const prioVal = prioridad ? (prioridad.display_value || (prioridad.enum_value && prioridad.enum_value.name) || '') : '';
+    const fechaPub = cf.find && cf.find(f => f.name && (f.name.toLowerCase().includes('fecha de publicaci') || f.name.toLowerCase().includes('hora de publicaci')));
+    const hasFechaPub = !!(fechaPub && (fechaPub.display_value || fechaPub.text_value));
+    return hasFechaPub && prioVal.toLowerCase().includes('urgent');
+  });
 
-  for (let i = 0; i < 30; i++) {
-    const checkStr = fmtDate(checkDate);
-    const completedOnDay = myTasks.some(t =>
-      t.completed && t.completed_at && t.completed_at.slice(0, 10) === checkStr
-    );
-    if (!completedOnDay) break;
-    streak++;
-    checkDate.setUTCDate(checkDate.getUTCDate() - 1);
-  }
+  // Videos en producción this week (INICIO/PROCESO/FIN tasks for this person)
+  const videosProduccion = (videoTasks || []).filter(vt => {
+    if (!vt.assignee) return false;
+    const lower = vt.assignee.toLowerCase();
+    const match = memberName.toLowerCase().includes('karen')
+      ? lower.includes('karen')
+      : lower === memberName.toLowerCase();
+    return match;
+  });
 
-  return { completedWeek, inProgressToday, pendingToday, streak, onTimeRate };
+  return { completedWeek, inProgressToday, pendingToday, onTimeRate, urgentesActivas, videosProduccion };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -397,70 +537,100 @@ async function generateAIAnalysis(data) {
 // ALERT BUILDER
 // ══════════════════════════════════════════════════════════════════════════════
 
-function buildAlerts(pipeline, accounts, today, weekStart, weekEnd) {
+function buildAlerts(pipeline, accounts, today, weekStart, weekEnd, allTasks, videoTasks) {
   const critical = [];
   const attention = [];
 
   const stages = pipeline.stages;
+  const allActive = Object.values(stages).flat();
+  const next7End = addDays(today, 7);
 
-  // Critical: Approved stage has 0 tasks
-  const approvedCount = (stages['Aproved'] || []).length;
-  if (approvedCount === 0) {
+  // 🔴 Approved = 0
+  if ((stages['Aproved'] || []).length === 0) {
     critical.push('Stage "Aprobado" tiene 0 videos — no hay contenido listo para publicar');
   }
 
-  // Critical: Ready to upload has 0 tasks
-  const readyCount = (stages['Ready to upload'] || []).length;
-  if (readyCount === 0) {
+  // 🔴 Ready to upload = 0
+  if ((stages['Ready to upload'] || []).length === 0) {
     critical.push('Stage "Ready to upload" tiene 0 videos');
   }
 
-  // Critical: task due today with no dropbox link
-  const allActive = Object.values(stages).flat();
-  const dueTodayNoFile = allActive.filter(t =>
-    t.due_on === today && !t.links.dropbox && !NON_STAGNATED_STAGES.includes(t.stage)
-  );
-  for (const t of dueTodayNoFile) {
+  // 🔴 Task due today with no dropbox link
+  for (const t of allActive.filter(t => t.due_on === today && !t.links.dropbox && !NON_STAGNATED_STAGES.includes(t.stage))) {
     critical.push(`"${t.name}" vence HOY sin archivo Dropbox`);
   }
 
-  // Critical: account has 0 scheduled in next 7 days AND 0 published this week
-  const next7End = addDays(today, 7);
-  for (const [acct, acctData] of Object.entries(accounts)) {
-    const upcoming = acctData.tasks.filter(t =>
-      t.stage === 'Scheduled/Publlished' && t.due_on &&
-      t.due_on >= today && t.due_on <= next7End
-    );
-    const publishedThisWeek = acctData.tasks.filter(t =>
-      t.completed && t.completed_at &&
-      isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd) &&
-      t.stage === 'Scheduled/Publlished'
-    );
-    if (upcoming.length === 0 && publishedThisWeek.length === 0) {
-      critical.push(`Cuenta ${acctData.name}: 0 publicaciones programadas en próximos 7 días y 0 publicadas esta semana`);
+  // 🔴 Account 0 scheduled next 7 days AND 0 published this week → >4 days no publish
+  for (const [, acctData] of Object.entries(accounts)) {
+    const lastPub = acctData.tasks
+      .filter(t => t.completed && t.completed_at)
+      .map(t => t.completed_at.slice(0, 10))
+      .sort().reverse()[0] || null;
+    const daysSince = lastPub
+      ? Math.floor((parseDate(today) - parseDate(lastPub)) / 86400000)
+      : 999;
+    if (daysSince > 4) {
+      critical.push(`Cuenta ${acctData.name}: ${daysSince} días sin publicar`);
     }
   }
 
-  // Attention: Resources pending > 2 days
-  const resPending = (stages['Resources pending'] || []).filter(t => t.days_in_stage > 2);
-  for (const t of resPending) {
+  // 🔴 Urgent tasks active (with fechaPublicacion set)
+  const urgentesAll = allTasks.filter(t => t.urgente);
+  if (urgentesAll.length > 0) {
+    for (const t of urgentesAll) {
+      critical.push(`⚡ Urgente activa: "${t.name}" | Vence: ${t.due_on || '—'}`);
+    }
+  }
+
+  // 🔴 Ready to upload with no FIN/ completed in Team Overview
+  const readyToUploadTasks = stages['Ready to upload'] || [];
+  for (const t of readyToUploadTasks) {
+    const finMatch = (videoTasks || []).find(vt =>
+      vt.prefix === 'FIN' && vt.pipelineMatch === t.gid && vt.completed
+    );
+    if (!finMatch) {
+      critical.push(`"${t.name}" en Ready to upload sin tarea FIN/ completada en Team Overview`);
+    }
+  }
+
+  // 🔴 3+ videos same day same account
+  for (const [, acctData] of Object.entries(accounts)) {
+    const byDay = {};
+    for (const t of acctData.tasks.filter(t => t.due_on && !t.completed)) {
+      byDay[t.due_on] = (byDay[t.due_on] || 0) + 1;
+    }
+    for (const [day, count] of Object.entries(byDay)) {
+      if (count > 3) critical.push(`${acctData.name}: ${count} videos el mismo día (${day})`);
+    }
+  }
+
+  // 🟡 Resources pending > 2 days
+  for (const t of (stages['Resources pending'] || []).filter(t => t.days_in_stage > 2)) {
     attention.push(`"${t.name}" lleva ${t.days_in_stage} días en "Resources pending"`);
   }
 
-  // Attention: account < 2 tasks in next 7 days
-  for (const [acct, acctData] of Object.entries(accounts)) {
-    const upcoming = acctData.tasks.filter(t =>
-      t.due_on && t.due_on >= today && t.due_on <= next7End
-    );
+  // 🟡 Account < 2 tasks next 7 days
+  for (const [, acctData] of Object.entries(accounts)) {
+    const upcoming = acctData.tasks.filter(t => t.due_on && t.due_on >= today && t.due_on <= next7End && !t.completed);
     if (upcoming.length < 2) {
       attention.push(`Cuenta ${acctData.name}: solo ${upcoming.length} tarea(s) en próximos 7 días`);
     }
   }
 
-  // Attention: > 24 tasks with no due date
+  // 🟡 > 24 without due date
   const noDate = allActive.filter(t => !t.due_on && !t.completed);
   if (noDate.length > 24) {
     attention.push(`${noDate.length} videos sin fecha asignada (umbral: 24)`);
+  }
+
+  // 🟡 Delivery margin < 2 days
+  for (const t of allTasks.filter(t => t.entregaEnRiesgo && !t.completed)) {
+    attention.push(`"${t.name}" — margen de entrega: ${t.margenDias} día(s) (mínimo recomendado: 2)`);
+  }
+
+  // 🟡 > 3 urgentes activas total
+  if (urgentesAll.length > 3) {
+    attention.push(`${urgentesAll.length} urgentes activas simultáneamente (máximo recomendado: 3)`);
   }
 
   return { critical, attention };
@@ -574,6 +744,21 @@ async function buildDailyData() {
     };
   }
 
+  // ── Cross-reference Team Overview ↔ Pipeline ─────────────────────────────
+  const teamTasksNormalized = rawTeam.map(t => ({
+    ...t,
+    assignee: t.assignee ? t.assignee.name : null,
+    completed_at: t.completed_at || null,
+    due_on: t.due_on || null,
+  }));
+  let videoTasks = [];
+  try {
+    videoTasks = crossReferenceVideos(teamTasksNormalized, tasks);
+    console.log(`[marketingReport] crossReference: ${videoTasks.length} video tasks found (INICIO/PROCESO/FIN)`);
+  } catch (err) {
+    console.error('[marketingReport] crossReference error:', err.message);
+  }
+
   // ── Stagnated videos ──────────────────────────────────────────────────────
   const stagnated = tasks.filter(t => t.stagnated && !t.completed);
 
@@ -583,7 +768,7 @@ async function buildDailyData() {
   // ── Alerts ────────────────────────────────────────────────────────────────
   let alerts = { critical: [], attention: [] };
   try {
-    alerts = buildAlerts(pipeline, accounts, today, weekStart, weekEnd);
+    alerts = buildAlerts(pipeline, accounts, today, weekStart, weekEnd, tasks, videoTasks);
   } catch (err) {
     console.error('[marketingReport] Alert build error:', err.message);
   }
@@ -594,9 +779,10 @@ async function buildDailyData() {
   const noDate = allActive.filter(t => !t.due_on).length;
   const pausedRecoverable = (stagesMap['Paused'] || []).length;
 
-  const producedThisWeek = tasks.filter(t =>
-    t.completed && t.completed_at &&
-    isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  // producedThisWeek = FIN/ tasks completed this week
+  const producedThisWeek = videoTasks.filter(vt =>
+    vt.prefix === 'FIN' && vt.completed && vt.completedAt &&
+    isInRange(vt.completedAt, weekStart, weekEnd)
   ).length;
 
   const publishedThisWeek = (stagesMap['Scheduled/Publlished'] || []).filter(t =>
@@ -617,24 +803,19 @@ async function buildDailyData() {
   }
 
   // ── Team metrics ──────────────────────────────────────────────────────────
-  const teamTasks = rawTeam.map(t => ({
-    ...t,
-    assignee: t.assignee ? t.assignee.name : null,
-    completed_at: t.completed_at || null,
-    due_on: t.due_on || null,
-  }));
+  const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasksNormalized, weekStart, weekEnd, today, videoTasks);
+  const karenMetrics = calcTeamMemberMetrics('karen', teamTasksNormalized, weekStart, weekEnd, today, videoTasks);
 
-  const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasks, weekStart, weekEnd, today);
-  const karenMetrics = calcTeamMemberMetrics('karen', teamTasks, weekStart, weekEnd, today);
-
-  const mostProductiveToday = nicoleMetrics.inProgressToday >= karenMetrics.inProgressToday
+  const mostProductiveThisWeek = nicoleMetrics.completedWeek >= karenMetrics.completedWeek
     ? 'Nicole Zapata'
     : 'Karen';
+  const mostProdCount = Math.max(nicoleMetrics.completedWeek, karenMetrics.completedWeek);
 
   const team = {
     nicole: nicoleMetrics,
     karen: karenMetrics,
-    mostProductiveToday,
+    mostProductiveThisWeek,
+    mostProdCount,
   };
 
   // ── AI Analysis ───────────────────────────────────────────────────────────
@@ -902,6 +1083,13 @@ async function buildMonthlyData() {
 // TEXT REPORT BUILDER
 // ══════════════════════════════════════════════════════════════════════════════
 
+function estadoIcon(estado) {
+  if (estado === 'FIN') return '✅ FIN';
+  if (estado === 'PROCESO') return '🔄 PROCESO';
+  if (estado === 'INICIO') return '🟡 INICIO';
+  return '⬜ Sin estado';
+}
+
 function buildDailyText(data) {
   const HR = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
   const lines = [];
@@ -911,25 +1099,21 @@ function buildDailyText(data) {
   lines.push(HR);
   lines.push('');
 
-  // Alerts
+  // ── Alerts ──────────────────────────────────────────────────────────────
   lines.push('🚨 ALERTAS CRÍTICAS');
-  if (data.alerts.critical.length === 0) {
-    lines.push('✅ Sin alertas críticas');
+  if (data.alerts.critical.length === 0 && data.alerts.attention.length === 0) {
+    lines.push('✅ Sin alertas críticas hoy');
   } else {
     for (const a of data.alerts.critical) lines.push(`🔴 ${a}`);
-  }
-  if (data.alerts.attention.length > 0) {
-    lines.push('');
-    lines.push('⚠️ ATENCIÓN');
     for (const a of data.alerts.attention) lines.push(`🟡 ${a}`);
   }
   lines.push('');
 
-  // Accounts
+  // ── Accounts ──────────────────────────────────────────────────────────────
   const accountOrder = [
     { key: 'PAOLA', label: '👤 PAOLA DÍAZ' },
     { key: 'JORGE', label: '👤 JORGE FLOREZ' },
-    { key: 'JP_LEGACY', label: '👤 JP LEGACY GROUP' },
+    { key: 'JP_LEGACY', label: '🏢 JP LEGACY GROUP' },
   ];
 
   for (const { key, label } of accountOrder) {
@@ -937,17 +1121,22 @@ function buildDailyText(data) {
     lines.push(label);
     lines.push('');
     const acct = data.accounts[key];
-    if (!acct) { lines.push('[Datos no disponibles]'); lines.push(''); continue; }
+    if (!acct) { lines.push('[Sección no disponible — error de conexión]'); lines.push(''); continue; }
 
     const goal = CADENCE_GOALS[key];
+    const daysSinceStr = acct.daysSincePublish >= 999 ? 'N/A' : String(acct.daysSincePublish);
     lines.push(`Publicados hoy: ${acct.publishedToday} | Esta semana: ${acct.publishedThisWeek}/${goal}`);
-    lines.push(`Días sin publicar: ${acct.daysSincePublish}`);
+    lines.push(`Días sin publicar: ${daysSinceStr}`);
 
-    // Content balance
-    const balEntries = Object.entries(acct.contentBalance);
-    if (balEntries.length > 0) {
-      const total = balEntries.reduce((s, [, v]) => s + v, 0);
-      const balStr = balEntries.map(([p, n]) => `${p} ${Math.round((n / total) * 100)}%`).join(' | ');
+    // Content balance — only tasks with tipo set (fechaPublicacion required)
+    const tipoTasks = acct.tasks.filter(t => t.tipo);
+    if (tipoTasks.length > 0) {
+      const tipoCount = {};
+      for (const t of tipoTasks) tipoCount[t.tipo] = (tipoCount[t.tipo] || 0) + 1;
+      const total = tipoTasks.length;
+      const balStr = Object.entries(tipoCount)
+        .map(([p, n]) => `${p} ${Math.round((n / total) * 100)}%`)
+        .join(' | ');
       lines.push(`Balance de contenido (7 días): ${balStr}`);
     }
 
@@ -959,15 +1148,19 @@ function buildDailyText(data) {
       for (const t of acct.upcomingWeek) {
         lines.push(`${t.due_on} — ${t.name}`);
         if (t.platforms.length > 0) lines.push(`  📱 ${t.platforms.join(', ')}`);
+        lines.push(`  Estado producción: ${estadoIcon(t.estadoProduccion)}`);
         if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
         else lines.push('  ⚠️ Sin archivo Dropbox');
-        lines.push(`  Stage: ${t.stage}`);
+        lines.push(`  Stage pipeline: ${t.stage}`);
+        if (t.entregaEnRiesgo) lines.push(`  ⚠️ Entrega en riesgo — margen: ${t.margenDias} día(s)`);
       }
     }
     lines.push('');
+    lines.push('📊 Último publicado: ⏳ Métricas disponibles en 24-48h');
+    lines.push('');
   }
 
-  // Pipeline
+  // ── Pipeline General ────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('🎬 PIPELINE GENERAL — Estado por Stage');
   lines.push('');
@@ -976,10 +1169,11 @@ function buildDailyText(data) {
     'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload',
   ];
   for (const s of activeStageList) {
-    const count = data.pipeline.stageCounts[s] || 0;
+    const stageTasks = data.pipeline.stages[s] || [];
+    const count = stageTasks.length;
     let extra = '';
     if (s === 'Resources pending') {
-      const blocked = (data.pipeline.stages[s] || []).filter(t => t.days_in_stage > 2).length;
+      const blocked = stageTasks.filter(t => t.tags && t.tags.some(tag => tag.toLowerCase().includes('faltan'))).length;
       if (blocked > 0) extra = ` [${blocked} bloqueados ⚠️]`;
     }
     if (s === 'Aproved' && count === 0) extra = ' [⚠️ ALERTA]';
@@ -988,11 +1182,26 @@ function buildDailyText(data) {
   lines.push('──────────────────────');
   lines.push(`Pipeline activo total: ${data.pipeline.activeTotal} videos`);
   lines.push('');
-  lines.push(`Scheduled/Published   ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} (histórico total)`);
-  lines.push(`Paused                ${data.pipeline.stageCounts['Paused'] || 0} | Backup: ${data.pipeline.stageCounts['Backup'] || 0}`);
+  lines.push(`Scheduled/Published    ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} (histórico total)`);
+  lines.push(`Paused                 ${data.pipeline.stageCounts['Paused'] || 0} | Backup: ${data.pipeline.stageCounts['Backup'] || 0}`);
   lines.push('');
 
-  // Stagnated
+  // Per-video detail for active stages
+  for (const s of activeStageList) {
+    const stageTasks = (data.pipeline.stages[s] || []).filter(t => !t.completed);
+    if (stageTasks.length === 0) continue;
+    lines.push(`  — ${s} —`);
+    for (const t of stageTasks) {
+      lines.push(`  ${t.name}`);
+      lines.push(`    Cuenta: ${t.accounts.join(', ') || '—'}`);
+      lines.push(`    Estado producción: ${estadoIcon(t.estadoProduccion)}`);
+      if (t.responsableProduccion) lines.push(`    Responsable: ${t.responsableProduccion}`);
+      if (t.links.dropbox) lines.push(`    🔗 ${t.links.dropbox}`);
+    }
+    lines.push('');
+  }
+
+  // ── Stagnated ────────────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('⏱️ VIDEOS ESTANCADOS (+3 días sin moverse)');
   lines.push('');
@@ -1003,26 +1212,31 @@ function buildDailyText(data) {
       lines.push(t.name);
       lines.push(`  Stage: ${t.stage} | Lleva: ${t.days_in_stage} días`);
       lines.push(`  Cuenta: ${t.accounts.join(', ') || '—'}`);
+      lines.push(`  Estado producción: ${estadoIcon(t.estadoProduccion)}`);
+      const blockedTags = (t.tags || []).filter(tag => tag.toLowerCase().includes('faltan'));
+      if (blockedTags.length > 0) lines.push(`  Bloqueado por: ${blockedTags.join(', ')}`);
       lines.push(`  Responsable: ${t.assignee || '—'}`);
       if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
     }
   }
   lines.push('');
 
-  // Inventory
+  // ── Inventory ────────────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('📦 INVENTARIO');
   lines.push('');
   lines.push(`Ready to upload: ${data.inventory.readyToUpload} videos listos para publicar`);
-  lines.push(`Sin fecha asignada: ${data.inventory.noDate} videos`);
+  lines.push(`Sin fecha asignada: ${data.inventory.noDate} videos (sin programar)`);
   lines.push(`Paused recuperables: ${data.inventory.pausedRecoverable}`);
   lines.push('');
   lines.push('Ratio producción/publicación esta semana:');
   const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
-  lines.push(`  Terminados: ${data.inventory.producedThisWeek} | Publicados: ${data.inventory.publishedThisWeek} | ${surplus >= 0 ? `Superávit: +${surplus}` : `Déficit: ${surplus}`}`);
+  lines.push(`  Terminados (FIN/ completados): ${data.inventory.producedThisWeek}`);
+  lines.push(`  Publicados: ${data.inventory.publishedThisWeek}`);
+  lines.push(`  ${surplus >= 0 ? `Superávit: +${surplus}` : `Déficit: ${surplus}`}`);
   lines.push('');
 
-  // Cadence
+  // ── Cadence ────────────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('📊 CADENCIA SEMANAL');
   lines.push('');
@@ -1040,33 +1254,59 @@ function buildDailyText(data) {
   }
   lines.push('');
 
-  // Team
+  // ── Team ────────────────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('👥 EQUIPO — Semana actual');
-  lines.push('');
-  lines.push('👤 Nicole Zapata');
-  lines.push(`  Completadas esta semana: ${data.team.nicole.completedWeek}`);
-  lines.push(`  En progreso hoy: ${data.team.nicole.inProgressToday}`);
-  lines.push(`  Pendientes hoy: ${data.team.nicole.pendingToday}`);
-  lines.push(`  Racha: ${data.team.nicole.streak} días | Tasa a tiempo: ${data.team.nicole.onTimeRate}%`);
-  lines.push('');
-  lines.push('👤 Karen');
-  lines.push(`  Completadas esta semana: ${data.team.karen.completedWeek}`);
-  lines.push(`  En progreso hoy: ${data.team.karen.inProgressToday}`);
-  lines.push(`  Pendientes hoy: ${data.team.karen.pendingToday}`);
-  lines.push(`  Racha: ${data.team.karen.streak} días | Tasa a tiempo: ${data.team.karen.onTimeRate}%`);
-  lines.push('');
-  const mostProd = data.team.mostProductiveToday;
-  const mostProdCount = mostProd === 'Nicole Zapata'
-    ? data.team.nicole.inProgressToday
-    : data.team.karen.inProgressToday;
-  lines.push(`🏆 Más productiva hoy: ${mostProd} con ${mostProdCount} tareas`);
+  lines.push('[Solo tareas con due_date esta semana. Semanas anteriores son histórico.]');
   lines.push('');
 
-  // AI
+  const teamMembers = [
+    { key: 'nicole', label: '👤 Nicole Zapata', metrics: data.team.nicole },
+    { key: 'karen', label: '👤 Karen', metrics: data.team.karen },
+  ];
+
+  for (const { label, metrics } of teamMembers) {
+    lines.push(label);
+    const urgCount = metrics.urgentesActivas ? metrics.urgentesActivas.length : 0;
+    lines.push(`  🔴 Urgentes activas: ${urgCount} (meta: 0)`);
+    if (urgCount > 0) {
+      for (const ut of metrics.urgentesActivas) {
+        const cf = ut.custom_fields || [];
+        const fechaPubCF = cf.find && cf.find(f => f.name && f.name.toLowerCase().includes('fecha'));
+        const fechaPubVal = fechaPubCF ? (fechaPubCF.display_value || '') : '—';
+        const dueDateStr = ut.due_on || '—';
+        const margen = (ut.due_on && fechaPubVal !== '—')
+          ? (() => {
+              const d = parseDate(fechaPubVal.slice(0, 10));
+              const due = parseDate(dueDateStr);
+              return (d && due) ? Math.round((d - due) / 86400000) : '?';
+            })()
+          : '?';
+        lines.push(`  ├── ${ut.name} | Due: ${dueDateStr} | Publica: ${fechaPubVal} | Margen: ${margen} días`);
+      }
+    }
+
+    const vids = metrics.videosProduccion || [];
+    if (vids.length > 0) {
+      lines.push(`  🎬 Videos en producción esta semana:`);
+      for (const vt of vids) {
+        lines.push(`  ├── ${vt.prefix} — ${vt.videoName}`);
+      }
+    }
+
+    lines.push(`  Completadas esta semana: ${metrics.completedWeek}`);
+    lines.push(`  En progreso hoy: ${metrics.inProgressToday} | Pendientes hoy: ${metrics.pendingToday}`);
+    lines.push(`  Tasa a tiempo: ${metrics.onTimeRate}%`);
+    lines.push('');
+  }
+
+  lines.push(`🏆 Más productiva esta semana: ${data.team.mostProductiveThisWeek} con ${data.team.mostProdCount} tareas`);
+  lines.push('');
+
+  // ── AI Analysis ────────────────────────────────────────────────────────
   lines.push(HR);
   lines.push('🤖 Análisis IA — JP Legacy Agent');
-  lines.push(data.aiAnalysis);
+  lines.push(data.aiAnalysis || '[Análisis IA no disponible]');
   lines.push('');
   lines.push(`JP Legacy Agent · Auto-generado · ${data.todayFormatted} ${data.generatedAt} ET`);
 
@@ -1483,19 +1723,19 @@ async function sendMonthlyMarketingReport() {
 
 function startMarketingReport() {
   // Daily Mon-Fri at 9am ET (14:00 UTC)
-  cron.schedule('0 14 * * 1-5', async () => {
+  cron.schedule('0 13 * * 1-5', async () => {
     console.log('[marketingReport] Daily cron fired');
     await sendDailyMarketingReport();
   });
 
   // Weekly on Monday at 9am ET (14:00 UTC) — same time as daily, but weekly report runs additionally
-  cron.schedule('0 14 * * 1', async () => {
+  cron.schedule('0 13 * * 1', async () => {
     console.log('[marketingReport] Weekly cron fired');
     await sendWeeklyMarketingReport();
   });
 
   // Monthly on 1st at 9am ET (14:00 UTC)
-  cron.schedule('0 14 1 * *', async () => {
+  cron.schedule('0 13 1 * *', async () => {
     console.log('[marketingReport] Monthly cron fired');
     await sendMonthlyMarketingReport();
   });
