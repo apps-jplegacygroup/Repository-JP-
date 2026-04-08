@@ -1,17 +1,33 @@
 'use strict';
+const axios = require('axios');
 const cron = require('node-cron');
 const { Resend } = require('resend');
 const Anthropic = require('@anthropic-ai/sdk');
-const { fetchProjectTasks, getCustomField } = require('./asana');
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ══════════════════════════════════════════════════════════════════════════════
 
-const TEAM = ['Nicole Zapata', 'Karen'];
-const TIPOS = ['Diseño', 'Video', 'Administrativo', 'Meeting', 'Otros'];
-const TIPO_ICONS = { Diseño: '🎨', Video: '🎬', Administrativo: '📋', Meeting: '📅', Otros: '📌' };
-const PRIORITY_COLORS = { High: '#FF4444', Medium: '#FFD700', Low: '#4FC3F7', '—': '#333333' };
+const PIPELINE_PROJECT_ID = '1211674641565541';
+const TEAM_OVERVIEW_PROJECT_ID = '1212623827839295';
+
+const PIPELINE_STAGES = [
+  'Concept/Idea',
+  'Resources pending',
+  'Ready to edit',
+  'Editing / Design',
+  'Review & Feedback',
+  'Aproved',
+  'Ready to upload',
+  'Scheduled/Publlished',
+  'Archive',
+  'Paused',
+  'Backup',
+];
+
+const NON_STAGNATED_STAGES = ['Scheduled/Publlished', 'Archive', 'Backup'];
+
+const CADENCE_GOALS = { PAOLA: 5, JORGE: 4, JP_LEGACY: 7 };
 
 const RECIPIENTS = [
   'jorgeflorez@jplegacygroup.com',
@@ -21,44 +37,21 @@ const RECIPIENTS = [
 ];
 
 const MONTHS_ES = [
-  'Enero','Febrero','Marzo','Abril','Mayo','Junio',
-  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre',
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
 ];
-const DAYS_ES = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 
 // ══════════════════════════════════════════════════════════════════════════════
-// EASTERN TIME HELPERS
+// DATE HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
-
-/** Returns 'YYYY-MM-DD' for a JS Date in America/New_York */
-function dateKeyET(jsDate = new Date()) {
-  return jsDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-}
 
 function todayET() {
-  return dateKeyET(new Date());
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
-/** Format ISO timestamp → "2:34 PM" in ET timezone */
-function formatTimeET(isoTimestamp) {
-  if (!isoTimestamp) return '—';
-  try {
-    const d = new Date(isoTimestamp);
-    return d.toLocaleString('en-US', {
-      timeZone: 'America/New_York',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
-  } catch (_) {
-    return '—';
-  }
-}
-
-/** Parse 'YYYY-MM-DD' as midnight-UTC Date (safe for arithmetic) */
 function parseDate(str) {
   if (!str) return null;
-  // Accept YYYY-MM-DD (possibly with time suffix like T00:00:00Z)
   const match = String(str).match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!match) return null;
   const d = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
@@ -72,1506 +65,1433 @@ function fmtDate(d) {
   return `${y}-${m}-${day}`;
 }
 
-/** 0-6 weekday for a YYYY-MM-DD string (0=Sun, 6=Sat) */
-function weekdayOf(isoDate) {
+/** Monday of the week containing isoDate (Mon-Sun week) */
+function mondayOf(isoDate) {
   const d = parseDate(isoDate);
-  if (!d) return -1;
-  return d.getUTCDay();
+  if (!d) return null;
+  const dow = d.getUTCDay(); // 0=Sun
+  const offset = dow === 0 ? 6 : dow - 1;
+  d.setUTCDate(d.getUTCDate() - offset);
+  return d;
 }
 
-function isWeekdayET(isoDate) {
-  const w = weekdayOf(isoDate);
-  return w >= 1 && w <= 5;
-}
-
-/** Yesterday (previous calendar day) in ET */
-function yesterdayET() {
-  const d = parseDate(todayET());
-  d.setUTCDate(d.getUTCDate() - 1);
-  return fmtDate(d);
-}
-
-/** Previous workday: Monday → Friday, else yesterday */
-function prevWorkdayET() {
+/** Current week Mon-Sun in ET */
+function currentWeekRangeET() {
   const today = todayET();
-  const dow = weekdayOf(today);
-  const d = parseDate(today);
-  if (dow === 1) {
-    d.setUTCDate(d.getUTCDate() - 3); // Monday → Friday
-  } else {
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
-  return fmtDate(d);
+  const mon = mondayOf(today);
+  const sun = new Date(mon);
+  sun.setUTCDate(sun.getUTCDate() + 6);
+  return { start: fmtDate(mon), end: fmtDate(sun) };
 }
 
-/** Monday of the current ET week */
-function currentWeekStartET() {
+/** Previous week Mon-Sun in ET */
+function prevWeekRangeET() {
   const today = todayET();
-  const d = parseDate(today);
+  const mon = mondayOf(today);
+  const prevMon = new Date(mon);
+  prevMon.setUTCDate(prevMon.getUTCDate() - 7);
+  const prevSun = new Date(prevMon);
+  prevSun.setUTCDate(prevSun.getUTCDate() + 6);
+  return { start: fmtDate(prevMon), end: fmtDate(prevSun) };
+}
+
+/** Previous calendar month range */
+function prevMonthRangeET() {
+  const today = parseDate(todayET());
+  const year = today.getUTCFullYear();
+  const month = today.getUTCMonth(); // 0-indexed, this is current month
+  const prevMonth = month === 0 ? 11 : month - 1;
+  const prevYear = month === 0 ? year - 1 : year;
+  const start = new Date(Date.UTC(prevYear, prevMonth, 1));
+  const end = new Date(Date.UTC(prevYear, prevMonth + 1, 0));
+  return {
+    start: fmtDate(start),
+    end: fmtDate(end),
+    label: `${MONTHS_ES[prevMonth]} ${prevYear}`,
+  };
+}
+
+function formatTodayES(isoDate) {
+  const d = parseDate(isoDate);
+  if (!d) return isoDate;
   const dow = d.getUTCDay();
-  d.setUTCDate(d.getUTCDate() - (dow === 0 ? 6 : dow - 1));
+  const day = d.getUTCDate();
+  const mon = MONTHS_ES[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  return `${DAYS_ES[dow]} ${day} de ${mon}, ${year}`;
+}
+
+function formatTimeNowET() {
+  return new Date().toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function isInRange(isoDate, start, end) {
+  if (!isoDate) return false;
+  return isoDate >= start && isoDate <= end;
+}
+
+function addDays(isoDate, n) {
+  const d = parseDate(isoDate);
+  if (!d) return null;
+  d.setUTCDate(d.getUTCDate() + n);
   return fmtDate(d);
 }
 
-/** { start, end } Mon-Fri of PREVIOUS week */
-function previousWeekRangeET() {
-  const mon = parseDate(currentWeekStartET());
-  mon.setUTCDate(mon.getUTCDate() - 7);
-  const fri = new Date(mon);
-  fri.setUTCDate(mon.getUTCDate() + 4);
-  return { start: fmtDate(mon), end: fmtDate(fri) };
-}
-
-/** { start, end, label } of PREVIOUS calendar month */
-function previousMonthRangeET() {
-  const today = todayET();
-  let [y, m] = today.split('-').map(Number);
-  m -= 1;
-  if (m === 0) { m = 12; y -= 1; }
-  const start = `${y}-${String(m).padStart(2, '0')}-01`;
-  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const end = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
-  return { start, end, label: `${MONTHS_ES[m - 1]} ${y}` };
-}
-
-/** Format 'YYYY-MM-DD' → "Martes 24 de Marzo" */
-function formatDateES(isoDate) {
-  if (!isoDate) return '—';
-  const d = parseDate(isoDate);
-  if (!d) return '—';
-  return `${DAYS_ES[d.getUTCDay()]} ${d.getUTCDate()} de ${MONTHS_ES[d.getUTCMonth()]}`;
-}
-
-/** Short date: "24 Mar" */
-function shortDate(isoDate) {
-  if (!isoDate) return '—';
-  const d = parseDate(isoDate);
-  if (!d) return '—';
-  return `${d.getUTCDate()} ${MONTHS_ES[d.getUTCMonth()].slice(0, 3)}`;
-}
-
-/** Integer days between two YYYY-MM-DD strings */
-function daysBetween(start, end) {
-  if (!start || !end) return null;
-  const s = parseDate(start);
-  const e = parseDate(end);
-  if (!s || !e) return null;
-  return Math.max(0, Math.round((e - s) / 86400000));
-}
-
-/** Array of { start, end, label } for Mon-Fri weeks within a date range */
-function weeksInRange(start, end) {
-  const weeks = [];
-  let d = parseDate(start);
-  const endD = parseDate(end);
-  if (!d || !endD) return weeks;
-  // advance to first Monday
-  while (d.getUTCDay() !== 1) d.setUTCDate(d.getUTCDate() + 1);
-  while (d <= endD) {
-    const fri = new Date(d);
-    fri.setUTCDate(d.getUTCDate() + 4);
-    const actualEnd = fri <= endD ? fri : endD;
-    weeks.push({
-      start: fmtDate(d),
-      end: fmtDate(actualEnd),
-      label: `${shortDate(fmtDate(d))} – ${shortDate(fmtDate(actualEnd))}`,
-    });
-    d.setUTCDate(d.getUTCDate() + 7);
-  }
-  return weeks;
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
-// TASK NORMALIZATION
+// ASANA API HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
 
-function getFieldMulti(task, ...names) {
-  for (const n of names) {
-    const v = getCustomField(task, n);
-    if (v !== null && v !== undefined && v !== '') return v;
-  }
-  return null;
+function asanaHeaders() {
+  return { Authorization: `Bearer ${process.env.ASANA_ACCESS_TOKEN}` };
 }
 
-function normalizePriority(raw) {
-  if (!raw) return '—';
-  const v = raw.trim().toLowerCase();
-  if (['high', 'alta', 'alto', 'crítica', 'critica'].includes(v)) return 'High';
-  if (['medium', 'media', 'medio', 'normal'].includes(v)) return 'Medium';
-  if (['low', 'baja', 'bajo'].includes(v)) return 'Low';
-  return raw.trim();
+async function delay(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-function normalizeEffort(raw) {
-  if (!raw) return null;
-  const v = raw.trim().toLowerCase();
-  const map = {
-    'small': 1, 'pequeño': 1, 'bajo': 1, 'low': 1, '1': 1,
-    'medium': 2, 'medio': 2, 'normal': 2, '2': 2,
-    'large': 3, 'grande': 3, 'alto': 3, 'high': 3, '3': 3,
-  };
-  const n = parseFloat(raw);
-  if (!isNaN(n) && n >= 1 && n <= 5) return n;
-  return map[v] || null;
-}
+/** Fetch all pages of tasks from Asana for a project */
+async function fetchPipelineTasks() {
+  const tasks = [];
+  let offset = null;
+  const optFields = [
+    'name', 'assignee', 'assignee.name', 'tags', 'tags.name',
+    'due_on', 'created_at', 'modified_at', 'completed', 'completed_at',
+    'custom_fields.name', 'custom_fields.display_value',
+    'notes', 'memberships.section.name',
+  ].join(',');
 
-function normalizeTipo(raw) {
-  if (!raw) return 'Otros';
-  const v = raw.trim().toLowerCase();
-  if (['diseño', 'design', 'diseno'].includes(v)) return 'Diseño';
-  if (v === 'video') return 'Video';
-  if (['administrativo', 'admin', 'administrative'].includes(v)) return 'Administrativo';
-  if (['meeting', 'reunión', 'reunion'].includes(v)) return 'Meeting';
-  return 'Otros';
-}
-
-/** Fuzzy-match Asana assignee name to TEAM member */
-function matchAssignee(rawName) {
-  if (!rawName) return 'Sin asignar';
-  const lower = rawName.toLowerCase().trim();
-  for (const member of TEAM) {
-    const ml = member.toLowerCase();
-    // exact match
-    if (lower === ml) return member;
-    const parts = ml.split(' ');
-    // single-word member (Karen): match if assignee starts with that word
-    if (parts.length === 1 && lower.startsWith(parts[0])) return member;
-    // multi-word: starts with first word and contains last word
-    if (parts.length > 1 && lower.startsWith(parts[0]) && lower.includes(parts[parts.length - 1])) return member;
-  }
-  return rawName;
-}
-
-function normalizeTasks(rawTasks) {
-  return rawTasks.map((t) => {
-    const assigneeName = t.assignee ? t.assignee.name : null;
-    const completedAtRaw = t.completed_at || null;
-    const completedDate = completedAtRaw ? dateKeyET(new Date(completedAtRaw)) : null;
-    const startDateRaw = getFieldMulti(t, 'Fecha de inicio', 'Start date', 'Start time') || t.start_on || null;
-    const endDateRaw   = getFieldMulti(t, 'Fecha de fin', 'End date', 'End Time') || t.due_on || null;
-    const prioridad    = normalizePriority(getFieldMulti(t, 'Prioridad', 'Priority'));
-    const estado       = getFieldMulti(t, 'Estado', 'Status') || '—';
-    const effortRaw    = getFieldMulti(t, 'Effort level', 'Effort Level', 'Nivel de esfuerzo');
-    const effortNum    = normalizeEffort(effortRaw);
-    const tipoRaw      = getFieldMulti(t, 'Tipo', 'Type');
-    const tipo         = normalizeTipo(tipoRaw);
-
-    // avoid treating due_on as startDate
-    const startDate = (startDateRaw && startDateRaw !== t.due_on) ? startDateRaw : null;
-    const endDate   = endDateRaw || null;
-
-    return {
-      name:          t.name || '(sin nombre)',
-      assignee:      matchAssignee(assigneeName),
-      dueDate:       t.due_on || null,
-      startDate,
-      endDate,
-      prioridad,
-      estado,
-      effortRaw,
-      effortLabel:   effortNum === 1 ? 'Small' : effortNum === 2 ? 'Medium' : effortNum === 3 ? 'Large' : '—',
-      effortNum,
-      tipo,
-      completed:     !!t.completed,
-      completedDate,
-      completedAt:   completedAtRaw,
+  do {
+    const params = {
+      project: PIPELINE_PROJECT_ID,
+      opt_fields: optFields,
+      limit: 100,
     };
-  });
-}
+    if (offset) params.offset = offset;
 
-// ══════════════════════════════════════════════════════════════════════════════
-// TASK CATEGORIZATION
-// ══════════════════════════════════════════════════════════════════════════════
-
-const IN_PROGRESS_STATES = ['in progress', 'en progreso', 'doing', 'wip', 'working', 'en curso', 'iniciado'];
-
-function inferInProgress(task) {
-  if (!task.estado || task.estado === '—') return false;
-  const v = task.estado.toLowerCase().trim();
-  return IN_PROGRESS_STATES.some((s) => v.includes(s));
-}
-
-/**
- * Categorizes tasks into 4 mutually exclusive buckets.
- * @param {Array} tasks - Pre-filtered array (caller decides what to include)
- * @param {string} today - YYYY-MM-DD
- */
-function categorizeTasks(tasks, today) {
-  const completed  = tasks.filter((t) => t.completed === true);
-  const incomplete = tasks.filter((t) => !t.completed);
-
-  const inProgress = incomplete.filter((t) => inferInProgress(t));
-  const inProgressSet = new Set(inProgress.map((t) => t.name));
-
-  const overdue = incomplete.filter(
-    (t) => !inProgressSet.has(t.name) && t.dueDate && t.dueDate < today
-  );
-  const overdueSet = new Set(overdue.map((t) => t.name));
-
-  const planned = incomplete.filter(
-    (t) => !inProgressSet.has(t.name) && !overdueSet.has(t.name)
-  );
-
-  return { completed, inProgress, overdue, planned };
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// METRICS CALCULATOR
-// ══════════════════════════════════════════════════════════════════════════════
-
-function calcMetrics(tasks, rangeStart, rangeEnd, today) {
-  const inRange  = (d) => d && d >= rangeStart && d <= rangeEnd;
-  const isWkday  = (d) => d && isWeekdayET(d);
-
-  const completedInPeriod = tasks.filter(
-    (t) => t.completed && inRange(t.completedDate) && isWkday(t.completedDate)
-  );
-  const pending = tasks.filter((t) => !t.completed);
-  const overdue = pending.filter((t) => t.dueDate && t.dueDate < today);
-  const inProgressTasks = pending.filter((t) => inferInProgress(t));
-
-  // On-time compliance
-  const withDue       = completedInPeriod.filter((t) => t.dueDate);
-  const onTime        = withDue.filter((t) => t.completedDate <= t.dueDate);
-  const sameDayComp   = withDue.filter((t) => t.completedDate === t.dueDate);
-  const beforeDeadline= withDue.filter((t) => t.completedDate <  t.dueDate);
-  const afterDeadline = withDue.filter((t) => t.completedDate >  t.dueDate);
-  const onTimeRate    = withDue.length > 0 ? (onTime.length / withDue.length) * 100 : null;
-
-  // Duration per task
-  const durations = tasks
-    .filter((t) => t.startDate && t.endDate && t.endDate >= t.startDate)
-    .map((t) => ({ task: t, days: daysBetween(t.startDate, t.endDate) }))
-    .filter((x) => x.days !== null);
-
-  const avgDays = durations.length > 0
-    ? durations.reduce((s, x) => s + x.days, 0) / durations.length
-    : null;
-
-  const sortedDur    = [...durations].sort((a, b) => b.days - a.days);
-  const longestTask  = sortedDur[0]
-    ? { name: sortedDur[0].task.name, days: sortedDur[0].days }
-    : null;
-  const shortestTask = sortedDur[sortedDur.length - 1]
-    ? { name: sortedDur[sortedDur.length - 1].task.name, days: sortedDur[sortedDur.length - 1].days }
-    : null;
-
-  const totalDaysPeriod = completedInPeriod
-    .filter((t) => t.startDate && t.endDate)
-    .reduce((s, t) => s + (daysBetween(t.startDate, t.endDate) || 0), 0);
-
-  // Avg tasks per workday
-  const daysWithWork   = new Set(completedInPeriod.map((t) => t.completedDate)).size;
-  const avgTasksPerDay = daysWithWork > 0 ? completedInPeriod.length / daysWithWork : 0;
-
-  // Streak (consecutive weekdays going back from today with completions)
-  const doneDates = new Set(
-    tasks.filter((t) => t.completed && t.completedDate).map((t) => t.completedDate)
-  );
-  let streak = 0;
-  const cur = parseDate(today);
-  for (let i = 0; i < 31; i++) {
-    const key = fmtDate(cur);
-    const dow = cur.getUTCDay();
-    if (dow >= 1 && dow <= 5) {
-      if (doneDates.has(key)) streak++;
-      else break;
-    }
-    cur.setUTCDate(cur.getUTCDate() - 1);
-  }
-
-  // Best / worst day in period
-  const dailyCompCounts = {};
-  completedInPeriod.forEach((t) => {
-    if (!t.completedDate) return;
-    dailyCompCounts[t.completedDate] = (dailyCompCounts[t.completedDate] || 0) + 1;
-  });
-  let bestDayInPeriod = null;
-  let worstDayInPeriod = null;
-  const dayEntries = Object.entries(dailyCompCounts);
-  if (dayEntries.length > 0) {
-    dayEntries.sort((a, b) => b[1] - a[1]);
-    bestDayInPeriod  = { date: dayEntries[0][0],                    count: dayEntries[0][1] };
-    worstDayInPeriod = { date: dayEntries[dayEntries.length - 1][0], count: dayEntries[dayEntries.length - 1][1] };
-  }
-
-  // Per-day breakdown (for weekly)
-  const dailyBreakdown = {};
-  completedInPeriod.forEach((t) => {
-    if (!t.completedDate) return;
-    if (!dailyBreakdown[t.completedDate]) dailyBreakdown[t.completedDate] = { completed: 0, tasks: [] };
-    dailyBreakdown[t.completedDate].completed++;
-    dailyBreakdown[t.completedDate].tasks.push(t);
-  });
-
-  // Tipo distributions
-  const tipoAll = {};
-  TIPOS.forEach((tp) => { tipoAll[tp] = 0; });
-  tasks.forEach((t) => { tipoAll[t.tipo] = (tipoAll[t.tipo] || 0) + 1; });
-
-  const tipoPeriod = {};
-  TIPOS.forEach((tp) => { tipoPeriod[tp] = 0; });
-  completedInPeriod.forEach((t) => { tipoPeriod[t.tipo]++; });
-
-  const tipoOverdueCount = {};
-  TIPOS.forEach((tp) => { tipoOverdueCount[tp] = 0; });
-  overdue.forEach((t) => { tipoOverdueCount[t.tipo]++; });
-  const mostDelayedTipo = TIPOS.reduce((a, b) =>
-    tipoOverdueCount[a] >= tipoOverdueCount[b] ? a : b
-  );
-
-  // Priority distributions
-  const priorityAll  = { High: 0, Medium: 0, Low: 0, '—': 0 };
-  const priorityDone = { High: 0, Medium: 0, Low: 0 };
-  tasks.forEach((t) => {
-    priorityAll[t.prioridad] = (priorityAll[t.prioridad] || 0) + 1;
-  });
-  completedInPeriod.forEach((t) => {
-    if (t.prioridad in priorityDone) priorityDone[t.prioridad]++;
-  });
-  const highOverdue      = overdue.filter((t) => t.prioridad === 'High');
-
-  // Effort distribution
-  const effortDist = { Small: 0, Medium: 0, Large: 0, '—': 0 };
-  tasks.forEach((t) => { effortDist[t.effortLabel] = (effortDist[t.effortLabel] || 0) + 1; });
-  const effortNums = tasks.map((t) => t.effortNum).filter((n) => n !== null);
-  const avgEffort  = effortNums.length > 0
-    ? effortNums.reduce((s, n) => s + n, 0) / effortNums.length
-    : null;
-
-  // Completion rate
-  const completionRate = tasks.length > 0
-    ? (completedInPeriod.length / tasks.length) * 100
-    : null;
-
-  const inProgressCount = inProgressTasks.length;
-
-  return {
-    total:              tasks.length,
-    completedInPeriod:  completedInPeriod.length,
-    completedTasks:     completedInPeriod,
-    pendingCount:       pending.length,
-    pendingTasks:       [...pending].sort((a, b) => ((a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : 1)),
-    overdueCount:       overdue.length,
-    overdueTasks:       [...overdue].sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1)),
-    inProgressCount,
-    inProgressTasks,
-    onTimeRate,
-    onTimeCount:        onTime.length,
-    lateCount:          afterDeadline.length,
-    completedBefore:    beforeDeadline.length,
-    completedSameDay:   sameDayComp.length,
-    completedAfter:     afterDeadline.length,
-    avgDays:            avgDays !== null ? Number(avgDays.toFixed(1)) : null,
-    totalDaysPeriod,
-    longestTask,
-    shortestTask,
-    avgTasksPerDay:     Number(avgTasksPerDay.toFixed(1)),
-    streak,
-    tipoAll,
-    tipoPeriod,
-    tipoOverdueCount,
-    mostDelayedTipo:    tipoOverdueCount[mostDelayedTipo] > 0 ? mostDelayedTipo : null,
-    priorityAll,
-    priorityDone,
-    highOverdue:        highOverdue.length,
-    highOverdueTasks:   highOverdue,
-    effortDist,
-    avgEffort:          avgEffort !== null ? Number(avgEffort.toFixed(1)) : null,
-    completionRate,
-    dailyBreakdown,
-    bestDayInPeriod,
-    worstDayInPeriod,
-  };
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// CRITICAL ALERTS
-// ══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Returns array of { level: 'red'|'yellow'|'green', assignee, taskName, message }
- */
-function buildCriticalAlerts(nicoleMetrics, karenMetrics, nicoleTasksByAssignee, karenTasksByAssignee, today) {
-  const alerts = [];
-  const tomorrow = fmtDate((() => { const d = parseDate(today); d.setUTCDate(d.getUTCDate() + 1); return d; })());
-
-  function processAssignee(metrics, assignee) {
-    // Red: High priority overdue
-    metrics.highOverdueTasks.forEach((t) => {
-      alerts.push({
-        level: 'red',
-        assignee,
-        taskName: t.name,
-        message: `🔴 Tarea HIGH vencida hace ${daysBetween(t.dueDate, today) || 0}d — límite ${formatDateES(t.dueDate)}`,
-      });
+    const res = await axios.get('https://app.asana.com/api/1.0/tasks', {
+      headers: asanaHeaders(),
+      params,
     });
 
-    // Red: Tasks due today not completed
-    const allTasks = assignee === 'Nicole Zapata' ? nicoleTasksByAssignee : karenTasksByAssignee;
-    allTasks
-      .filter((t) => !t.completed && t.dueDate === today)
-      .forEach((t) => {
-        alerts.push({
-          level: 'red',
-          assignee,
-          taskName: t.name,
-          message: `🔴 Vence HOY y no está completada — ${t.prioridad} prioridad`,
-        });
-      });
+    tasks.push(...(res.data.data || []));
+    offset = res.data.next_page ? res.data.next_page.offset : null;
+  } while (offset);
 
-    // Yellow: Medium priority overdue
-    metrics.overdueTasks
-      .filter((t) => t.prioridad === 'Medium')
-      .forEach((t) => {
-        alerts.push({
-          level: 'yellow',
-          assignee,
-          taskName: t.name,
-          message: `🟡 Tarea MEDIUM vencida hace ${daysBetween(t.dueDate, today) || 0}d`,
-        });
-      });
+  return tasks;
+}
 
-    // Yellow: Tasks due tomorrow still pending
-    allTasks
-      .filter((t) => !t.completed && t.dueDate === tomorrow)
-      .forEach((t) => {
-        alerts.push({
-          level: 'yellow',
-          assignee,
-          taskName: t.name,
-          message: `🟡 Vence mañana y sigue pendiente — ${t.prioridad} prioridad`,
-        });
-      });
+/** Fetch Team Overview tasks with completed_since for current week */
+async function fetchTeamOverviewTasks(weekStart) {
+  const tasks = [];
+  let offset = null;
+  const optFields = [
+    'name', 'assignee.name', 'due_on', 'completed', 'completed_at',
+    'start_on', 'custom_fields.name', 'custom_fields.display_value',
+  ].join(',');
 
-    // Green: Low priority overdue
-    metrics.overdueTasks
-      .filter((t) => t.prioridad === 'Low')
-      .forEach((t) => {
-        alerts.push({
-          level: 'green',
-          assignee,
-          taskName: t.name,
-          message: `🟢 Tarea LOW vencida hace ${daysBetween(t.dueDate, today) || 0}d`,
-        });
-      });
-  }
+  const completedSince = `${weekStart}T00:00:00.000Z`;
 
-  processAssignee(nicoleMetrics, 'Nicole Zapata');
-  processAssignee(karenMetrics, 'Karen');
-  return alerts;
+  do {
+    const params = {
+      project: TEAM_OVERVIEW_PROJECT_ID,
+      opt_fields: optFields,
+      completed_since: completedSince,
+      limit: 100,
+    };
+    if (offset) params.offset = offset;
+
+    const res = await axios.get('https://app.asana.com/api/1.0/tasks', {
+      headers: asanaHeaders(),
+      params,
+    });
+
+    tasks.push(...(res.data.data || []));
+    offset = res.data.next_page ? res.data.next_page.offset : null;
+  } while (offset);
+
+  return tasks;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// WEEK LEADER SCORING
+// PIPELINE TASK PROCESSORS
 // ══════════════════════════════════════════════════════════════════════════════
 
-function score100(nm, km) {
-  const safe = (n, d) => (d > 0 ? n / d : 0);
+/** Get the section/stage name from a task's memberships */
+function getTaskStage(task) {
+  if (!task.memberships || task.memberships.length === 0) return 'Unknown';
+  const membership = task.memberships.find(m => m.section && m.section.name);
+  return membership ? membership.section.name : 'Unknown';
+}
 
-  const maxComp       = Math.max(nm.completedInPeriod, km.completedInPeriod, 1);
-  const nicoleVelocity= safe(nm.completedInPeriod, maxComp) * 35;
-  const karenVelocity = safe(km.completedInPeriod, maxComp) * 35;
-
-  const nicoleOnTime  = (nm.onTimeRate !== null ? nm.onTimeRate / 100 : 0.5) * 30;
-  const karenOnTime   = (km.onTimeRate !== null ? km.onTimeRate / 100 : 0.5) * 30;
-
-  const nicoleEffort  = (nm.avgEffort !== null ? nm.avgEffort / 5 : 0.5) * 20;
-  const karenEffort   = (km.avgEffort !== null ? km.avgEffort / 5 : 0.5) * 20;
-
-  const overdueBonus  = (m) => Math.max(0, 15 - m.overdueCount * 3);
-  const nicoleOver    = overdueBonus(nm);
-  const karenOver     = overdueBonus(km);
-
-  const nicoleTotal   = nicoleVelocity + nicoleOnTime + nicoleEffort + nicoleOver;
-  const karenTotal    = karenVelocity  + karenOnTime  + karenEffort  + karenOver;
-
-  let leader = 'Empate';
-  if (nicoleTotal - karenTotal > 3) leader = 'Nicole Zapata';
-  else if (karenTotal - nicoleTotal > 3) leader = 'Karen';
-
-  const reasons = [];
-  if (nm.completedInPeriod !== km.completedInPeriod) {
-    const more = nm.completedInPeriod > km.completedInPeriod ? 'Nicole' : 'Karen';
-    reasons.push(`${more} completó más tareas en el período`);
+/** Classify accounts from task tags */
+function getTaskAccounts(task) {
+  const accounts = [];
+  if (!task.tags || task.tags.length === 0) return accounts;
+  for (const tag of task.tags) {
+    const name = (tag.name || '').toLowerCase();
+    if (name.includes('paola')) accounts.push('PAOLA');
+    if (name.includes('jorge')) accounts.push('JORGE');
+    if (name.includes('jp legacy') || name.includes('jplegacy')) accounts.push('JP_LEGACY');
   }
-  if (
-    nm.onTimeRate !== null &&
-    km.onTimeRate !== null &&
-    Math.abs(nm.onTimeRate - km.onTimeRate) > 5
-  ) {
-    const better = nm.onTimeRate > km.onTimeRate ? 'Nicole' : 'Karen';
-    const val    = Math.max(nm.onTimeRate, km.onTimeRate);
-    reasons.push(`${better} tuvo mejor tasa de cumplimiento (${val.toFixed(0)}%)`);
-  }
-  if (nm.overdueCount !== km.overdueCount) {
-    const fewer = nm.overdueCount < km.overdueCount ? 'Nicole' : 'Karen';
-    reasons.push(`${fewer} tuvo menos tareas vencidas`);
-  }
+  return [...new Set(accounts)];
+}
+
+/** Extract platform tags (non-account tags) */
+function getTaskPlatformTags(task) {
+  if (!task.tags || task.tags.length === 0) return [];
+  const accountKeywords = ['paola', 'jorge', 'jp legacy', 'jplegacy'];
+  return task.tags
+    .map(t => t.name || '')
+    .filter(name => {
+      const lower = name.toLowerCase();
+      return !accountKeywords.some(kw => lower.includes(kw));
+    });
+}
+
+/** Extract links from notes */
+function extractLinks(notes) {
+  if (!notes) return { dropbox: null, instagram: null, zillow: null };
+  const dropboxMatch = notes.match(/https?:\/\/[^\s\n"<>]*dropbox\.com[^\s\n"<>]*/i);
+  const instagramMatch = notes.match(/https?:\/\/[^\s\n"<>]*instagram\.com[^\s\n"<>]*/i);
+  const zillowMatch = notes.match(/https?:\/\/[^\s\n"<>]*zillow\.com[^\s\n"<>]*/i);
+  return {
+    dropbox: dropboxMatch ? dropboxMatch[0] : null,
+    instagram: instagramMatch ? instagramMatch[0] : null,
+    zillow: zillowMatch ? zillowMatch[0] : null,
+  };
+}
+
+/** Days in current stage (based on modified_at) */
+function daysInStage(task) {
+  if (!task.modified_at) return 0;
+  return Math.floor((Date.now() - new Date(task.modified_at)) / (1000 * 60 * 60 * 24));
+}
+
+/** Enrich a pipeline task with derived fields */
+function enrichPipelineTask(task) {
+  const stage = getTaskStage(task);
+  const accounts = getTaskAccounts(task);
+  const links = extractLinks(task.notes);
+  const platforms = getTaskPlatformTags(task);
+  const days = daysInStage(task);
+  const stagnated = days > 3 && !NON_STAGNATED_STAGES.includes(stage);
 
   return {
-    leader,
-    nicoleScore: Math.round(nicoleTotal),
-    karenScore:  Math.round(karenTotal),
-    reasons:     reasons.slice(0, 3),
+    gid: task.gid,
+    name: task.name,
+    stage,
+    accounts,
+    platforms,
+    assignee: task.assignee ? task.assignee.name : null,
+    due_on: task.due_on || null,
+    created_at: task.created_at,
+    modified_at: task.modified_at,
+    completed: task.completed || false,
+    completed_at: task.completed_at || null,
+    notes: task.notes || '',
+    tags: (task.tags || []).map(t => t.name),
+    links,
+    days_in_stage: days,
+    stagnated,
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TEAM METRICS CALCULATOR
+// ══════════════════════════════════════════════════════════════════════════════
+
+function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today) {
+  const isMatch = (t) => {
+    if (!t.assignee) return false;
+    const lower = (t.assignee || '').toLowerCase();
+    if (memberName.toLowerCase().includes('karen')) return lower.includes('karen');
+    return lower === memberName.toLowerCase();
+  };
+
+  const myTasks = tasks.filter(t => isMatch(t));
+
+  const completedWeek = myTasks.filter(t =>
+    t.completed && t.completed_at &&
+    isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  ).length;
+
+  const inProgressToday = myTasks.filter(t =>
+    !t.completed && t.due_on === today
+  ).length;
+
+  const pendingToday = myTasks.filter(t =>
+    !t.completed && t.due_on && t.due_on < today
+  ).length;
+
+  // On-time rate: completed tasks with due_on where completed_at date <= due_on
+  const completedWithDue = myTasks.filter(t => t.completed && t.completed_at && t.due_on);
+  const onTime = completedWithDue.filter(t => t.completed_at.slice(0, 10) <= t.due_on);
+  const onTimeRate = completedWithDue.length > 0
+    ? Math.round((onTime.length / completedWithDue.length) * 100)
+    : 0;
+
+  // Streak: consecutive days (backwards from yesterday) with >= 1 completion
+  let streak = 0;
+  const todayDate = parseDate(today);
+  let checkDate = new Date(todayDate);
+  checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+
+  for (let i = 0; i < 30; i++) {
+    const checkStr = fmtDate(checkDate);
+    const completedOnDay = myTasks.some(t =>
+      t.completed && t.completed_at && t.completed_at.slice(0, 10) === checkStr
+    );
+    if (!completedOnDay) break;
+    streak++;
+    checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+  }
+
+  return { completedWeek, inProgressToday, pendingToday, streak, onTimeRate };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AI ANALYSIS
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function generateAIAnalysis(reportType, nm, km) {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
+async function generateAIAnalysis(data) {
   try {
-    const client = new Anthropic();
-    const fmt    = (v, suf = '') => (v !== null && v !== undefined ? `${v}${suf}` : 'N/A');
-    const tipoStr = (m) => TIPOS.map((t) => `${t}:${m.tipoAll[t]}`).join(', ');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const context = [
+      `Pipeline: ${data.pipeline.activeTotal} videos activos.`,
+      `Alerts: ${data.alerts.critical.length} críticas, ${data.alerts.attention.length} atención.`,
+      `Estancados: ${data.stagnated.length}.`,
+      `Nicole: ${data.team.nicole.completedWeek} completadas semana.`,
+      `Karen: ${data.team.karen.completedWeek} completadas semana.`,
+      `Cadencia Paola: ${data.cadence.PAOLA.actual}/${data.cadence.PAOLA.goal},`,
+      `Jorge: ${data.cadence.JORGE.actual}/${data.cadence.JORGE.goal},`,
+      `JP Legacy: ${data.cadence.JP_LEGACY.actual}/${data.cadence.JP_LEGACY.goal}.`,
+    ].join(' ');
 
-    const prompt = `Eres el analista de productividad del equipo de marketing de JP Legacy Group.
-Analiza los siguientes datos del equipo para el reporte ${reportType}:
-
-NICOLE ZAPATA:
-- Tareas completadas en período: ${nm.completedInPeriod}
-- Total tareas asignadas: ${nm.total}
-- Tasa de completación: ${nm.completionRate !== null ? nm.completionRate.toFixed(0) : 'N/A'}%
-- Tasa de cumplimiento a tiempo: ${fmt(nm.onTimeRate !== null ? nm.onTimeRate.toFixed(0) : null, '%')}
-- Antes del límite: ${nm.completedBefore} | Mismo día: ${nm.completedSameDay} | Después: ${nm.completedAfter}
-- Tareas vencidas: ${nm.overdueCount} (High: ${nm.highOverdue})
-- En progreso: ${nm.inProgressCount}
-- Promedio días/tarea: ${fmt(nm.avgDays, 'd')}
-- Promedio tareas/día: ${fmt(nm.avgTasksPerDay)}
-- Racha actual: ${nm.streak} días
-- Prioridades: High=${nm.priorityAll.High} Med=${nm.priorityAll.Medium} Low=${nm.priorityAll.Low}
-- Tipos: ${tipoStr(nm)}
-- Effort promedio: ${fmt(nm.avgEffort, '/5')}
-
-KAREN:
-- Tareas completadas en período: ${km.completedInPeriod}
-- Total tareas asignadas: ${km.total}
-- Tasa de completación: ${km.completionRate !== null ? km.completionRate.toFixed(0) : 'N/A'}%
-- Tasa de cumplimiento a tiempo: ${fmt(km.onTimeRate !== null ? km.onTimeRate.toFixed(0) : null, '%')}
-- Antes del límite: ${km.completedBefore} | Mismo día: ${km.completedSameDay} | Después: ${km.completedAfter}
-- Tareas vencidas: ${km.overdueCount} (High: ${km.highOverdue})
-- En progreso: ${km.inProgressCount}
-- Promedio días/tarea: ${fmt(km.avgDays, 'd')}
-- Promedio tareas/día: ${fmt(km.avgTasksPerDay)}
-- Racha actual: ${km.streak} días
-- Prioridades: High=${km.priorityAll.High} Med=${km.priorityAll.Medium} Low=${km.priorityAll.Low}
-- Tipos: ${tipoStr(km)}
-- Effort promedio: ${fmt(km.avgEffort, '/5')}
-
-Proporciona en ESPAÑOL, breve y directo (máx 200 palabras):
-1. **Colaboradora más productiva:** [nombre] — [razón en 1 oración con dato específico]
-2. **Mejor cumplimiento:** [nombre] — [dato concreto]
-3. **Cuellos de botella:** (2-3 bullets con los principales obstáculos detectados)
-4. **Tipos con más retrasos:** (1-2 bullets sobre qué tipo de tarea genera más demoras)
-5. **Días menos productivos:** [observación basada en datos]
-6. **3-5 recomendaciones concretas y accionables para la próxima semana:** (bullets)
-
-Usa los datos específicos del reporte. Sé directo y práctico.`;
-
-    const msg = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 500,
-      messages:   [{ role: 'user', content: prompt }],
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 250,
+      messages: [{
+        role: 'user',
+        content: `Analiza estos datos del pipeline de marketing de JP Legacy Group y da observaciones clave, cuellos de botella detectados y 2-3 recomendaciones concretas. Tono ejecutivo en español. Solo el párrafo de análisis, máximo 150 palabras, sin preámbulos.\n\n${context}`,
+      }],
     });
     return msg.content[0].text;
   } catch (err) {
-    console.error('[Marketing] AI analysis error:', err.message);
-    return null;
+    console.error('[marketingReport] AI analysis error:', err.message);
+    return '[Análisis IA no disponible — error de conexión]';
   }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HTML SHARED COMPONENTS
+// ALERT BUILDER
 // ══════════════════════════════════════════════════════════════════════════════
 
-const BASE_CSS = `background:#000000;font-family:Arial,sans-serif;`;
+function buildAlerts(pipeline, accounts, today, weekStart, weekEnd) {
+  const critical = [];
+  const attention = [];
 
-function htmlWrap(body) {
-  return `<!DOCTYPE html>
-<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;${BASE_CSS}">
-<table width="100%" cellpadding="0" cellspacing="0" bgcolor="#000000">
-<tr><td align="center" style="padding:20px 10px;">
-<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;">
-${body}
-<tr><td style="height:20px;"></td></tr>
-<tr><td style="text-align:center;padding:14px 0;border-top:1px solid #1A1A1A;">
-  <span style="color:#2A2A2A;font-size:10px;font-family:Arial,sans-serif;">
-    JP Legacy Agent · Auto-generado · America/New_York (ET)
-  </span>
-</td></tr>
-</table></td></tr></table></body></html>`;
-}
+  const stages = pipeline.stages;
 
-function htmlHeader(title, subtitle) {
-  return `<tr><td style="padding:24px 0 18px;text-align:center;border-bottom:2px solid #C9A84C;">
-  <div style="color:#C9A84C;font-size:22px;font-weight:bold;letter-spacing:4px;font-family:Arial,sans-serif;">JP LEGACY GROUP</div>
-  <div style="color:#FFFFFF;font-size:14px;font-weight:bold;margin-top:8px;font-family:Arial,sans-serif;">${title}</div>
-  <div style="color:#666666;font-size:11px;margin-top:4px;font-family:Arial,sans-serif;">${subtitle}</div>
-</td></tr><tr><td style="height:14px;"></td></tr>`;
-}
-
-function divider() {
-  return `<tr><td style="height:1px;background:#1A1A1A;padding:0;margin:0;font-size:0;line-height:0;"></td></tr>`;
-}
-
-function sectionHeader(icon, title, count) {
-  const countStr = count !== undefined && count !== null ? ` (${count})` : '';
-  return `<tr><td style="padding:8px 14px;background:#0D0D0D;border-top:1px solid #1A1A1A;">
-  <span style="color:#888888;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">${icon} ${title}${countStr}</span>
-</td></tr>`;
-}
-
-/** Colored alert rows at top of report */
-function criticalAlertsBlock(alerts) {
-  if (!alerts || alerts.length === 0) return '';
-  const colorMap = { red: '#FF4444', yellow: '#FFD700', green: '#4CAF50' };
-  const bgMap    = { red: '#1A0000', yellow: '#1A1400', green: '#001A00' };
-
-  const rows = alerts.map((a) => {
-    const color = colorMap[a.level] || '#888888';
-    const bg    = bgMap[a.level]    || '#111111';
-    return `<tr>
-      <td style="padding:7px 14px;background:${bg};border-bottom:1px solid #1A1A1A;">
-        <span style="color:${color};font-size:11px;font-weight:bold;font-family:Arial,sans-serif;">${a.message}</span>
-        <span style="color:#555555;font-size:10px;font-family:Arial,sans-serif;margin-left:8px;">— ${a.assignee}: ${a.taskName}</span>
-      </td>
-    </tr>`;
-  }).join('');
-
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #2A1A1A;border-radius:6px;overflow:hidden;">
-    <tr><td style="padding:7px 14px;background:#1A0A0A;border-bottom:1px solid #2A1A1A;">
-      <span style="color:#FF4444;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:bold;font-family:Arial,sans-serif;">🚨 Alertas Críticas (${alerts.length})</span>
-    </td></tr>
-    ${rows}
-  </table>
-</td></tr><tr><td style="height:10px;"></td></tr>`;
-}
-
-function statBoxRow(stats) {
-  const cells = stats.map((s, i) => `
-  <td align="center" style="padding:12px 8px;${i > 0 ? 'border-left:1px solid #1E1E1E;' : ''}">
-    <div style="color:${s.color || '#FFFFFF'};font-size:26px;font-weight:bold;font-family:Arial,sans-serif;">${s.value !== null && s.value !== undefined ? s.value : '—'}</div>
-    <div style="color:#444444;font-size:9px;letter-spacing:1px;text-transform:uppercase;font-family:Arial,sans-serif;">${s.label}</div>
-  </td>`).join('');
-  return `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0F0F0F;border:1px solid #1E1E1E;border-radius:8px;">
-      <tr>${cells}</tr>
-    </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`;
-}
-
-function priorityBadge(prioridad) {
-  const color = PRIORITY_COLORS[prioridad] || '#888888';
-  const bg    = prioridad === 'High'   ? '#2A0000'
-              : prioridad === 'Medium' ? '#1A1400'
-              : prioridad === 'Low'    ? '#001A2A'
-              : '#111111';
-  return `<span style="background:${bg};color:${color};padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">${prioridad || '—'}</span>`;
-}
-
-function effortBadge(effortLabel) {
-  const color = effortLabel === 'Large' ? '#FF6B35'
-              : effortLabel === 'Medium' ? '#FFD700'
-              : effortLabel === 'Small' ? '#4CAF50'
-              : '#555555';
-  return `<span style="color:${color};font-size:10px;font-family:Arial,sans-serif;">${effortLabel || '—'}</span>`;
-}
-
-function tipoBadge(tipo) {
-  return `<span style="color:#888888;font-size:10px;font-family:Arial,sans-serif;">${TIPO_ICONS[tipo] || '📌'} ${tipo || 'Otros'}</span>`;
-}
-
-// ── Task Detail Cards ─────────────────────────────────────────────────────────
-
-function completedTaskRow(task) {
-  const dur       = daysBetween(task.startDate, task.endDate);
-  const durFromAt = task.completedAt && task.startDate
-    ? daysBetween(task.startDate, dateKeyET(new Date(task.completedAt)))
-    : null;
-  const durDisplay= dur !== null ? `${dur}d` : (durFromAt !== null ? `~${durFromAt}d` : '—');
-
-  let badge = '';
-  if (task.dueDate && task.completedDate) {
-    if (task.completedDate < task.dueDate)  badge = `<span style="background:#0A1A0A;color:#4CAF50;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">✅ antes de tiempo</span>`;
-    else if (task.completedDate === task.dueDate) badge = `<span style="background:#1A1400;color:#FFD700;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">✅ a tiempo</span>`;
-    else badge = `<span style="background:#2A0000;color:#FF4444;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">⏰ tarde</span>`;
+  // Critical: Approved stage has 0 tasks
+  const approvedCount = (stages['Aproved'] || []).length;
+  if (approvedCount === 0) {
+    critical.push('Stage "Aprobado" tiene 0 videos — no hay contenido listo para publicar');
   }
 
-  const timeStr = task.completedAt ? formatTimeET(task.completedAt) : '—';
-  const startStr= task.startDate ? shortDate(task.startDate) : '—';
-
-  return `<tr>
-    <td style="padding:8px 12px;background:#080F08;border-bottom:1px solid #0F1A0F;">
-      <div style="font-weight:bold;color:#FFFFFF;font-size:12px;font-family:Arial,sans-serif;margin-bottom:4px;">${task.name}</div>
-      <table cellpadding="0" cellspacing="0" style="margin-bottom:4px;"><tr>
-        <td style="padding-right:8px;">${tipoBadge(task.tipo)}</td>
-        <td style="padding-right:8px;">${priorityBadge(task.prioridad)}</td>
-        <td>${effortBadge(task.effortLabel)}</td>
-      </tr></table>
-      <div style="color:#555555;font-size:10px;font-family:Arial,sans-serif;">
-        Inicio: ${startStr} &nbsp;|&nbsp; Fin: ${timeStr} &nbsp;|&nbsp; Duración: ${durDisplay} &nbsp;|&nbsp; ${badge}
-      </div>
-    </td>
-  </tr>`;
-}
-
-function inProgressTaskRow(task, today) {
-  const daysLeft   = task.dueDate ? daysBetween(today, task.dueDate) : null;
-  const elapsed    = task.startDate ? daysBetween(task.startDate, today) : null;
-
-  let statusBadge = '';
-  if (task.dueDate) {
-    if (task.dueDate < today) {
-      statusBadge = `<span style="background:#2A0000;color:#FF4444;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">🔴 excedida</span>`;
-    } else if (daysLeft !== null && daysLeft <= 2) {
-      statusBadge = `<span style="background:#1A1000;color:#FFD700;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">⚠️ en riesgo</span>`;
-    } else {
-      statusBadge = `<span style="background:#0A1A0A;color:#4CAF50;padding:2px 7px;border-radius:10px;font-size:10px;font-family:Arial,sans-serif;">✅ dentro del tiempo</span>`;
-    }
+  // Critical: Ready to upload has 0 tasks
+  const readyCount = (stages['Ready to upload'] || []).length;
+  if (readyCount === 0) {
+    critical.push('Stage "Ready to upload" tiene 0 videos');
   }
 
-  return `<tr>
-    <td style="padding:8px 12px;background:#0A0A10;border-bottom:1px solid #141420;">
-      <div style="font-weight:bold;color:#FFFFFF;font-size:12px;font-family:Arial,sans-serif;margin-bottom:4px;">${task.name}</div>
-      <table cellpadding="0" cellspacing="0" style="margin-bottom:4px;"><tr>
-        <td style="padding-right:8px;">${tipoBadge(task.tipo)}</td>
-        <td style="padding-right:8px;">${priorityBadge(task.prioridad)}</td>
-        <td>Esfuerzo estimado: ${effortBadge(task.effortLabel)}</td>
-      </tr></table>
-      <div style="color:#555555;font-size:10px;font-family:Arial,sans-serif;">
-        Fecha límite: ${formatDateES(task.dueDate)}
-        &nbsp;|&nbsp; Días restantes: ${daysLeft !== null ? daysLeft : '—'}
-        &nbsp;|&nbsp; ${statusBadge}
-        ${elapsed !== null ? `&nbsp;|&nbsp; Transcurrido: ${elapsed}d` : ''}
-      </div>
-    </td>
-  </tr>`;
-}
-
-function overdueTaskRow(task, today) {
-  const daysLate  = task.dueDate ? daysBetween(task.dueDate, today) : null;
-  const alertColor= task.prioridad === 'High'   ? '#FF4444'
-                  : task.prioridad === 'Medium' ? '#FFD700'
-                  : '#4CAF50';
-  const alertBg   = task.prioridad === 'High'   ? '#1A0000'
-                  : task.prioridad === 'Medium' ? '#141000'
-                  : '#001A00';
-  const alertIcon = task.prioridad === 'High' ? '🔴' : task.prioridad === 'Medium' ? '🟡' : '🟢';
-
-  return `<tr>
-    <td style="padding:8px 12px;background:${alertBg};border-bottom:1px solid #1A0A0A;">
-      <div style="margin-bottom:4px;">
-        <span style="color:${alertColor};font-size:11px;font-weight:bold;font-family:Arial,sans-serif;">${alertIcon} ${task.name}</span>
-      </div>
-      <table cellpadding="0" cellspacing="0" style="margin-bottom:4px;"><tr>
-        <td style="padding-right:8px;">${tipoBadge(task.tipo)}</td>
-        <td>${priorityBadge(task.prioridad)}</td>
-      </tr></table>
-      <div style="color:#555555;font-size:10px;font-family:Arial,sans-serif;">
-        Fecha límite: ${formatDateES(task.dueDate)}
-        &nbsp;|&nbsp; Días de retraso: <span style="color:${alertColor};font-weight:bold;">${daysLate !== null ? daysLate : '—'}</span>
-      </div>
-    </td>
-  </tr>`;
-}
-
-function plannedTaskRow(task, today) {
-  const daysLeft = task.dueDate ? daysBetween(today, task.dueDate) : null;
-  const dueToday = task.dueDate === today;
-
-  return `<tr>
-    <td style="padding:8px 12px;background:#0A0A0A;border-bottom:1px solid #141414;">
-      <div style="font-weight:bold;color:#CCCCCC;font-size:12px;font-family:Arial,sans-serif;margin-bottom:4px;">
-        ${task.name}${dueToday ? ' <span style="color:#FFD700;font-size:10px;font-family:Arial,sans-serif;">🔔 Vence hoy</span>' : ''}
-      </div>
-      <table cellpadding="0" cellspacing="0" style="margin-bottom:4px;"><tr>
-        <td style="padding-right:8px;">${tipoBadge(task.tipo)}</td>
-        <td style="padding-right:8px;">${priorityBadge(task.prioridad)}</td>
-        <td>Esfuerzo: ${effortBadge(task.effortLabel)}</td>
-      </tr></table>
-      <div style="color:#555555;font-size:10px;font-family:Arial,sans-serif;">
-        Fecha límite: ${formatDateES(task.dueDate)}
-        &nbsp;|&nbsp; Días restantes: ${daysLeft !== null ? daysLeft : '—'}
-      </div>
-    </td>
-  </tr>`;
-}
-
-// ── Metrics Block ─────────────────────────────────────────────────────────────
-
-function metricsBlock(metrics, label) {
-  const m         = metrics;
-  const onTimeStr = m.onTimeRate !== null ? `${m.onTimeRate.toFixed(0)}%` : '—';
-  const avgDayStr = m.avgDays !== null ? `${m.avgDays}d` : '—';
-  const compRate  = m.completionRate !== null ? `${m.completionRate.toFixed(0)}%` : '—';
-  const pendRate  = m.total > 0 ? `${(((m.total - m.completedInPeriod) / m.total) * 100).toFixed(0)}%` : '—';
-  const ovdRate   = m.total > 0 ? `${((m.overdueCount / m.total) * 100).toFixed(0)}%` : '—';
-  const longest   = m.longestTask  ? `${m.longestTask.name.slice(0, 28)}${m.longestTask.name.length > 28 ? '…' : ''} ${m.longestTask.days}d` : '—';
-  const shortest  = m.shortestTask ? `${m.shortestTask.name.slice(0, 28)}${m.shortestTask.name.length > 28 ? '…' : ''} ${m.shortestTask.days}d` : '—';
-
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#080808;border:1px solid #1A1A1A;border-radius:6px;overflow:hidden;">
-    <tr><td style="padding:7px 12px;background:#0D0D0D;border-bottom:1px solid #1A1A1A;">
-      <span style="color:#C9A84C;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:bold;font-family:Arial,sans-serif;">📈 MÉTRICAS ${label}</span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Total asignadas: <b style="color:#FFF;">${m.total}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Completadas: <b style="color:#4CAF50;">${m.completedInPeriod} (${compRate})</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">En progreso: <b style="color:#4FC3F7;">${m.inProgressCount}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">No completadas: <b style="color:#FFD700;">${m.pendingCount} (${pendRate})</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Vencidas: <b style="color:${m.overdueCount > 0 ? '#FF4444' : '#555'}">${m.overdueCount} (${ovdRate})</b></span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Tiempo total: <b style="color:#C9A84C;">${m.totalDaysPeriod}d</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Promedio/tarea: <b style="color:#C9A84C;">${avgDayStr}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Más larga: <b style="color:#FF6B35;">${longest}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Más corta: <b style="color:#4CAF50;">${shortest}</b></span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Tasa a tiempo: <b style="color:${m.onTimeRate !== null && m.onTimeRate >= 70 ? '#4CAF50' : '#FF6B35'}">${onTimeStr}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Antes del límite: <b style="color:#4CAF50;">${m.completedBefore}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">El mismo día: <b style="color:#FFD700;">${m.completedSameDay}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Después: <b style="color:${m.completedAfter > 0 ? '#FF4444' : '#555'}">${m.completedAfter}</b></span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Racha actual: <b style="color:#FF9800;">${m.streak > 0 ? `🔥${m.streak} días` : '—'}</b></span>
-      &nbsp;|&nbsp;<span style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">Prom tareas/día: <b style="color:#C9A84C;">${m.avgTasksPerDay}</b></span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#555;font-size:10px;font-family:Arial,sans-serif;">Tipos: </span>
-      ${TIPOS.map((t) => `<span style="color:#888;font-size:10px;font-family:Arial,sans-serif;">${t} <b style="color:#FFF;">${m.tipoAll[t] || 0}</b></span>`).join(' &nbsp;|&nbsp; ')}
-    </td></tr>
-    <tr><td style="padding:8px 12px;border-bottom:1px solid #141414;">
-      <span style="color:#555;font-size:10px;font-family:Arial,sans-serif;">Prioridad: </span>
-      <span style="color:#FF4444;font-size:10px;font-family:Arial,sans-serif;">High <b>${m.priorityAll.High}</b></span>
-      &nbsp;|&nbsp;<span style="color:#FFD700;font-size:10px;font-family:Arial,sans-serif;">Medium <b>${m.priorityAll.Medium}</b></span>
-      &nbsp;|&nbsp;<span style="color:#4FC3F7;font-size:10px;font-family:Arial,sans-serif;">Low <b>${m.priorityAll.Low}</b></span>
-    </td></tr>
-    <tr><td style="padding:8px 12px;">
-      <span style="color:#555;font-size:10px;font-family:Arial,sans-serif;">Effort: </span>
-      <span style="color:#4CAF50;font-size:10px;font-family:Arial,sans-serif;">Small <b>${m.effortDist.Small}</b></span>
-      &nbsp;|&nbsp;<span style="color:#FFD700;font-size:10px;font-family:Arial,sans-serif;">Medium <b>${m.effortDist.Medium}</b></span>
-      &nbsp;|&nbsp;<span style="color:#FF6B35;font-size:10px;font-family:Arial,sans-serif;">Large <b>${m.effortDist.Large}</b></span>
-    </td></tr>
-  </table>
-</td></tr><tr><td style="height:8px;"></td></tr>`;
-}
-
-// ── AI Block ──────────────────────────────────────────────────────────────────
-
-function aiBlock(aiText) {
-  if (!aiText) return '';
-  const html = aiText
-    .replace(/\*\*(.*?)\*\*/g, '<strong style="color:#C9A84C;">$1</strong>')
-    .replace(/\n\n/g, '<br><br>')
-    .replace(/\n[-•] /g, '<br>• ')
-    .replace(/\n(\d+\.) /g, '<br>$1 ');
-  return `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0D0A;border:1px solid #1A2A1A;border-radius:8px;">
-      <tr><td style="padding:10px 16px;border-bottom:1px solid #1A2A1A;">
-        <span style="color:#4CAF50;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">🤖 Análisis del Equipo — Claude AI</span>
-      </td></tr>
-      <tr><td style="padding:14px 16px;color:#CCCCCC;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">${html}</td></tr>
-    </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`;
-}
-
-// ── Comparison Row Helper ─────────────────────────────────────────────────────
-
-function cmpRow(label, nVal, kVal, higherBetter = true, unit = '') {
-  const n = typeof nVal === 'number' ? nVal : parseFloat(nVal);
-  const k = typeof kVal === 'number' ? kVal : parseFloat(kVal);
-  let nWin = false, kWin = false;
-  if (!isNaN(n) && !isNaN(k) && n !== k) {
-    nWin = higherBetter ? n > k : n < k;
-    kWin = !nWin;
-  }
-  const fmt = (v, win) => {
-    const display = typeof v === 'number'
-      ? (Number.isInteger(v) ? v : v.toFixed(1))
-      : (v !== null && v !== undefined ? v : '—');
-    const color = win ? '#4CAF50' : '#888888';
-    const bg    = win ? 'background:#081408;' : '';
-    return `<td style="padding:8px 12px;border-bottom:1px solid #1A1A1A;text-align:center;${bg}">
-      <span style="color:${color};font-size:13px;font-weight:bold;font-family:Arial,sans-serif;">
-        ${display}${unit}${win ? ' 🏆' : ''}
-      </span>
-    </td>`;
-  };
-  return `<tr>
-    <td style="padding:8px 12px;border-bottom:1px solid #1A1A1A;color:#AAAAAA;font-size:12px;font-family:Arial,sans-serif;">${label}</td>
-    ${fmt(nVal, nWin)}
-    ${fmt(kVal, kWin)}
-  </tr>`;
-}
-
-function comparisonSection(nm, km, leaderResult) {
-  const { leader, nicoleScore, karenScore, reasons } = leaderResult;
-  const leaderBanner = leader !== 'Empate'
-    ? `<tr><td colspan="3" style="padding:14px;text-align:center;background:#081408;border-bottom:1px solid #1A2A1A;">
-        <div style="color:#4CAF50;font-size:10px;letter-spacing:3px;text-transform:uppercase;font-family:Arial,sans-serif;">🏆 LÍDER DEL PERÍODO</div>
-        <div style="color:#FFFFFF;font-size:20px;font-weight:bold;margin:6px 0;font-family:Arial,sans-serif;">${leader}</div>
-        <div style="color:#555555;font-size:11px;font-family:Arial,sans-serif;">${reasons.join(' · ')}</div>
-        <div style="color:#333333;font-size:10px;margin-top:6px;font-family:Arial,sans-serif;">Nicole ${nicoleScore} pts — Karen ${karenScore} pts</div>
-      </td></tr>`
-    : `<tr><td colspan="3" style="padding:12px;text-align:center;background:#141414;border-bottom:1px solid #1E1E1E;">
-        <div style="color:#888888;font-size:11px;font-family:Arial,sans-serif;">🤝 Empate técnico este período</div>
-      </td></tr>`;
-
-  const headers = `<tr>
-    <td style="padding:8px 12px;border-bottom:1px solid #1A1A1A;background:#0A0A0A;"></td>
-    <td style="padding:8px 12px;border-bottom:1px solid #1A1A1A;text-align:center;background:#0A0A0A;color:#C9A84C;font-size:11px;font-weight:bold;font-family:Arial,sans-serif;">Nicole Zapata</td>
-    <td style="padding:8px 12px;border-bottom:1px solid #1A1A1A;text-align:center;background:#0A0A0A;color:#4FC3F7;font-size:11px;font-weight:bold;font-family:Arial,sans-serif;">Karen</td>
-  </tr>`;
-
-  const rows = [
-    cmpRow('Tareas completadas',       nm.completedInPeriod,  km.completedInPeriod,  true),
-    cmpRow('Tasa de cumplimiento',     nm.onTimeRate !== null ? nm.onTimeRate.toFixed(0) : null, km.onTimeRate !== null ? km.onTimeRate.toFixed(0) : null, true, '%'),
-    cmpRow('Tasa de completación',     nm.completionRate !== null ? nm.completionRate.toFixed(0) : null, km.completionRate !== null ? km.completionRate.toFixed(0) : null, true, '%'),
-    cmpRow('Días promedio/tarea',      nm.avgDays,            km.avgDays,            false, 'd'),
-    cmpRow('Tareas/día',               nm.avgTasksPerDay,     km.avgTasksPerDay,     true),
-    cmpRow('Racha actual (días)',       nm.streak,             km.streak,             true),
-    cmpRow('Tareas High completadas',  nm.priorityDone.High,  km.priorityDone.High,  true),
-    cmpRow('Tareas High vencidas',     nm.highOverdue,        km.highOverdue,        false),
-    cmpRow('Tareas vencidas total',    nm.overdueCount,       km.overdueCount,       false),
-    cmpRow('Effort promedio',          nm.avgEffort,          km.avgEffort,          true, '/5'),
-    cmpRow('En progreso',              nm.inProgressCount,    km.inProgressCount,    false),
-  ].join('');
-
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-    <tr><td colspan="3" style="padding:10px 14px;border-bottom:1px solid #141414;">
-      <span style="color:#C9A84C;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-weight:bold;font-family:Arial,sans-serif;">⚔️ Nicole vs Karen</span>
-    </td></tr>
-    ${leaderBanner}
-    <table width="100%" cellpadding="0" cellspacing="0">${headers}${rows}</table>
-  </table>
-</td></tr><tr><td style="height:10px;"></td></tr>`;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// PER-COLLABORATOR SECTIONS
-// ══════════════════════════════════════════════════════════════════════════════
-
-/** Daily assignee section: shows yesterday completions + today plan */
-function dailyAssigneeSection(assignee, tasks, yesterday, today) {
-  const headerColor = assignee === 'Nicole Zapata' ? '#C9A84C' : '#4FC3F7';
-  const cats        = categorizeTasks(tasks, today);
-
-  const completedYesterday = cats.completed.filter((t) => t.completedDate === yesterday);
-  const completedToday     = cats.completed.filter((t) => t.completedDate === today);
-  const plannedToday       = cats.planned.filter((t) => !t.dueDate || t.dueDate >= today);
-
-  const metrics = calcMetrics(tasks, yesterday, today, today);
-
-  const yesterdaySeparator = `<tr><td style="padding:6px 14px;background:#0D0D0D;border-top:1px solid #1A1A1A;border-bottom:1px solid #1A1A1A;">
-    <span style="color:#555555;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">── AYER ${formatDateES(yesterday)} ──</span>
-  </td></tr>`;
-
-  const todaySeparator = `<tr><td style="padding:6px 14px;background:#0D0D0D;border-top:1px solid #1A1A1A;border-bottom:1px solid #1A1A1A;">
-    <span style="color:#C9A84C;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">── HOY ${formatDateES(today)} ──</span>
-  </td></tr>`;
-
-  const buildSection = (title, rows, emptyMsg) => {
-    if (rows.length === 0) {
-      return `<tr><td style="padding:4px 14px;background:#080808;border-bottom:1px solid #141414;">
-        <span style="color:#333;font-size:10px;font-style:italic;font-family:Arial,sans-serif;">${emptyMsg}</span>
-      </td></tr>`;
-    }
-    return rows.join('');
-  };
-
-  const body = `
-    <tr><td style="padding:12px 14px;background:#0D0D0D;border-bottom:1px solid #1A1A1A;">
-      <span style="color:${headerColor};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">👤 ${assignee}</span>
-      <span style="color:#333;font-size:10px;font-family:Arial,sans-serif;margin-left:10px;">${tasks.length} tareas asignadas</span>
-    </td></tr>
-    ${yesterdaySeparator}
-    ${sectionHeader('✅', 'Completadas ayer', completedYesterday.length)}
-    ${buildSection('Completadas ayer', completedYesterday.map((t) => completedTaskRow(t)), 'Sin tareas completadas ayer.')}
-    ${sectionHeader('⚙️', 'En Progreso', cats.inProgress.length)}
-    ${buildSection('En Progreso', cats.inProgress.map((t) => inProgressTaskRow(t, today)), 'Sin tareas en progreso.')}
-    ${cats.overdue.length > 0 ? sectionHeader('🔴', 'Vencidas', cats.overdue.length) : ''}
-    ${cats.overdue.length > 0 ? buildSection('Vencidas', cats.overdue.map((t) => overdueTaskRow(t, today)), '') : ''}
-    ${todaySeparator}
-    ${sectionHeader('✅', 'Completadas hoy', completedToday.length)}
-    ${buildSection('Completadas hoy', completedToday.map((t) => completedTaskRow(t)), 'Sin tareas completadas hoy aún.')}
-    ${sectionHeader('📋', 'Planificadas / Pendientes hoy', plannedToday.length)}
-    ${buildSection('Planificadas', plannedToday.map((t) => plannedTaskRow(t, today)), 'Sin tareas planificadas para hoy.')}
-  `;
-
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-    ${body}
-    <tr><td style="padding:10px 14px;">
-      <table width="100%" cellpadding="0" cellspacing="0">
-        ${metricsBlock(metrics, `${assignee.split(' ')[0].toUpperCase()}`)}
-      </table>
-    </td></tr>
-  </table>
-</td></tr><tr><td style="height:12px;"></td></tr>`;
-}
-
-/** Weekly assignee section: per-day breakdown Mon-Fri + weekly metrics */
-function weeklyAssigneeSection(assignee, tasks, weekRange, today) {
-  const headerColor = assignee === 'Nicole Zapata' ? '#C9A84C' : '#4FC3F7';
-  const cats        = categorizeTasks(tasks, today);
-  const metrics     = calcMetrics(tasks, weekRange.start, weekRange.end, today);
-
-  // Build day date keys for the week
-  const dayKeys = [];
-  const startD  = parseDate(weekRange.start);
-  for (let i = 0; i < 5; i++) {
-    const d = new Date(startD);
-    d.setUTCDate(startD.getUTCDate() + i);
-    dayKeys.push(fmtDate(d));
+  // Critical: task due today with no dropbox link
+  const allActive = Object.values(stages).flat();
+  const dueTodayNoFile = allActive.filter(t =>
+    t.due_on === today && !t.links.dropbox && !NON_STAGNATED_STAGES.includes(t.stage)
+  );
+  for (const t of dueTodayNoFile) {
+    critical.push(`"${t.name}" vence HOY sin archivo Dropbox`);
   }
 
-  let dayRows = '';
-  dayKeys.forEach((dk) => {
-    const dayLabel = formatDateES(dk).toUpperCase();
-    const completedThatDay = cats.completed.filter((t) => t.completedDate === dk);
-    const dayHdr = `<tr><td style="padding:5px 14px;background:#111111;border-top:1px solid #1A1A1A;border-bottom:1px solid #1A1A1A;">
-      <span style="color:#888888;font-size:9px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">📆 ${dayLabel}</span>
-    </td></tr>`;
-    dayRows += dayHdr;
-    if (completedThatDay.length > 0) {
-      dayRows += completedThatDay.map((t) => completedTaskRow(t)).join('');
-    } else {
-      dayRows += `<tr><td style="padding:5px 14px;background:#080808;border-bottom:1px solid #141414;">
-        <span style="color:#2A2A2A;font-size:10px;font-style:italic;font-family:Arial,sans-serif;">Sin completaciones este día.</span>
-      </td></tr>`;
-    }
-  });
-
-  // In progress, overdue for the week
-  const inProgSection = cats.inProgress.length > 0
-    ? sectionHeader('⚙️', 'En Progreso', cats.inProgress.length) +
-      cats.inProgress.map((t) => inProgressTaskRow(t, today)).join('')
-    : '';
-  const ovdSection = cats.overdue.length > 0
-    ? sectionHeader('🔴', 'Vencidas', cats.overdue.length) +
-      cats.overdue.map((t) => overdueTaskRow(t, today)).join('')
-    : '';
-
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-    <tr><td style="padding:12px 14px;background:#0D0D0D;border-bottom:1px solid #1A1A1A;">
-      <span style="color:${headerColor};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">👤 ${assignee}</span>
-      <span style="color:#333;font-size:10px;font-family:Arial,sans-serif;margin-left:10px;">${tasks.length} tareas asignadas</span>
-    </td></tr>
-    ${sectionHeader('📅', 'Completadas por Día', metrics.completedInPeriod)}
-    ${dayRows}
-    ${inProgSection}
-    ${ovdSection}
-    <tr><td style="padding:10px 14px;">
-      <table width="100%" cellpadding="0" cellspacing="0">
-        ${metricsBlock(metrics, `SEMANA — ${assignee.split(' ')[0].toUpperCase()}`)}
-      </table>
-    </td></tr>
-  </table>
-</td></tr><tr><td style="height:12px;"></td></tr>`;
-}
-
-/** Monthly assignee section: per-week breakdown + monthly metrics */
-function monthlyAssigneeSection(assignee, tasks, monthRange, today) {
-  const headerColor = assignee === 'Nicole Zapata' ? '#C9A84C' : '#4FC3F7';
-  const cats        = categorizeTasks(tasks, today);
-  const metrics     = calcMetrics(tasks, monthRange.start, monthRange.end, today);
-  const weeks       = weeksInRange(monthRange.start, monthRange.end);
-
-  let weekRows = '';
-  weeks.forEach((w) => {
-    const weekMetrics = calcMetrics(tasks, w.start, w.end, today);
-    const completedThisWeek = cats.completed.filter(
-      (t) => t.completedDate >= w.start && t.completedDate <= w.end
+  // Critical: account has 0 scheduled in next 7 days AND 0 published this week
+  const next7End = addDays(today, 7);
+  for (const [acct, acctData] of Object.entries(accounts)) {
+    const upcoming = acctData.tasks.filter(t =>
+      t.stage === 'Scheduled/Publlished' && t.due_on &&
+      t.due_on >= today && t.due_on <= next7End
     );
-    weekRows += `<tr><td style="padding:5px 14px;background:#111111;border-top:1px solid #1A1A1A;border-bottom:1px solid #1A1A1A;">
-      <span style="color:#888888;font-size:9px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">📆 SEMANA ${w.label}</span>
-      <span style="color:#C9A84C;font-size:10px;font-family:Arial,sans-serif;margin-left:10px;">${weekMetrics.completedInPeriod} completadas</span>
-      ${weekMetrics.overdueCount > 0 ? `<span style="color:#FF4444;font-size:10px;font-family:Arial,sans-serif;margin-left:6px;">· ${weekMetrics.overdueCount} vencidas</span>` : ''}
-    </td></tr>`;
-    if (completedThisWeek.length > 0) {
-      weekRows += completedThisWeek.slice(0, 5).map((t) => completedTaskRow(t)).join('');
-      if (completedThisWeek.length > 5) {
-        weekRows += `<tr><td style="padding:4px 14px;background:#080808;border-bottom:1px solid #141414;">
-          <span style="color:#2A2A2A;font-size:10px;font-family:Arial,sans-serif;">+ ${completedThisWeek.length - 5} más esta semana</span>
-        </td></tr>`;
-      }
-    } else {
-      weekRows += `<tr><td style="padding:5px 14px;background:#080808;border-bottom:1px solid #141414;">
-        <span style="color:#2A2A2A;font-size:10px;font-style:italic;font-family:Arial,sans-serif;">Sin completaciones esta semana.</span>
-      </td></tr>`;
+    const publishedThisWeek = acctData.tasks.filter(t =>
+      t.completed && t.completed_at &&
+      isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd) &&
+      t.stage === 'Scheduled/Publlished'
+    );
+    if (upcoming.length === 0 && publishedThisWeek.length === 0) {
+      critical.push(`Cuenta ${acctData.name}: 0 publicaciones programadas en próximos 7 días y 0 publicadas esta semana`);
     }
-  });
+  }
 
-  const ovdSection = cats.overdue.length > 0
-    ? sectionHeader('🔴', 'Vencidas este mes', cats.overdue.length) +
-      cats.overdue.map((t) => overdueTaskRow(t, today)).join('')
-    : '';
+  // Attention: Resources pending > 2 days
+  const resPending = (stages['Resources pending'] || []).filter(t => t.days_in_stage > 2);
+  for (const t of resPending) {
+    attention.push(`"${t.name}" lleva ${t.days_in_stage} días en "Resources pending"`);
+  }
 
-  return `<tr><td>
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-    <tr><td style="padding:12px 14px;background:#0D0D0D;border-bottom:1px solid #1A1A1A;">
-      <span style="color:${headerColor};font-size:13px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">👤 ${assignee}</span>
-      <span style="color:#333;font-size:10px;font-family:Arial,sans-serif;margin-left:10px;">${tasks.length} tareas asignadas</span>
-    </td></tr>
-    ${sectionHeader('📅', 'Completadas por Semana', metrics.completedInPeriod)}
-    ${weekRows}
-    ${ovdSection}
-    <tr><td style="padding:10px 14px;">
-      <table width="100%" cellpadding="0" cellspacing="0">
-        ${metricsBlock(metrics, `MES — ${assignee.split(' ')[0].toUpperCase()}`)}
-      </table>
-    </td></tr>
-  </table>
-</td></tr><tr><td style="height:12px;"></td></tr>`;
+  // Attention: account < 2 tasks in next 7 days
+  for (const [acct, acctData] of Object.entries(accounts)) {
+    const upcoming = acctData.tasks.filter(t =>
+      t.due_on && t.due_on >= today && t.due_on <= next7End
+    );
+    if (upcoming.length < 2) {
+      attention.push(`Cuenta ${acctData.name}: solo ${upcoming.length} tarea(s) en próximos 7 días`);
+    }
+  }
+
+  // Attention: > 24 tasks with no due date
+  const noDate = allActive.filter(t => !t.due_on && !t.completed);
+  if (noDate.length > 24) {
+    attention.push(`${noDate.length} videos sin fecha asignada (umbral: 24)`);
+  }
+
+  return { critical, attention };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // DATA BUILDERS
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function fetchAndNormalize() {
-  const projectId = process.env.ASANA_PROJECT_ID;
-  if (!projectId) throw new Error('ASANA_PROJECT_ID no configurado');
-  const raw = await fetchProjectTasks(projectId);
-  console.log(`[Marketing] Tareas de Asana: ${raw.length}`);
-  return normalizeTasks(raw);
-}
-
-function splitByTeam(tasks) {
-  const byAssignee = {};
-  for (const member of TEAM) {
-    byAssignee[member] = tasks.filter((t) => t.assignee === member);
-  }
-  return byAssignee;
-}
-
 async function buildDailyData() {
-  const today     = todayET();
-  const yesterday = yesterdayET();
-  const tasks     = await fetchAndNormalize();
-  const byAssignee= splitByTeam(tasks);
+  const today = todayET();
+  const { start: weekStart, end: weekEnd } = currentWeekRangeET();
+  const next7End = addDays(today, 7);
 
-  const nicole = calcMetrics(byAssignee['Nicole Zapata'], yesterday, today, today);
-  const karen  = calcMetrics(byAssignee['Karen'],         yesterday, today, today);
+  // ── Fetch pipeline tasks ──────────────────────────────────────────────────
+  let rawPipeline = [];
+  try {
+    rawPipeline = await fetchPipelineTasks();
+  } catch (err) {
+    console.error('[marketingReport] Pipeline fetch error:', err.message);
+  }
 
-  const alerts = buildCriticalAlerts(
-    nicole, karen,
-    byAssignee['Nicole Zapata'],
-    byAssignee['Karen'],
-    today
-  );
+  await delay(300);
 
-  const aiText = await generateAIAnalysis('diario', nicole, karen);
-  return { today, yesterday, byAssignee, metrics: { nicole, karen }, alerts, totalTasks: tasks.length, aiText };
+  // ── Fetch team overview tasks ─────────────────────────────────────────────
+  let rawTeam = [];
+  try {
+    rawTeam = await fetchTeamOverviewTasks(weekStart);
+  } catch (err) {
+    console.error('[marketingReport] Team overview fetch error:', err.message);
+  }
+
+  // ── Enrich pipeline tasks ─────────────────────────────────────────────────
+  const tasks = rawPipeline.map(enrichPipelineTask);
+
+  // ── Build stages map ──────────────────────────────────────────────────────
+  const stagesMap = {};
+  for (const stage of PIPELINE_STAGES) stagesMap[stage] = [];
+  for (const task of tasks) {
+    if (stagesMap[task.stage] !== undefined) {
+      stagesMap[task.stage].push(task);
+    } else {
+      // Unknown stage — put in a catch-all
+      if (!stagesMap['Other']) stagesMap['Other'] = [];
+      stagesMap['Other'].push(task);
+    }
+  }
+
+  const stageCounts = {};
+  for (const [s, arr] of Object.entries(stagesMap)) stageCounts[s] = arr.length;
+
+  const activeStages = PIPELINE_STAGES.filter(s => !['Scheduled/Publlished', 'Archive', 'Paused', 'Backup'].includes(s));
+  const activeTotal = activeStages.reduce((sum, s) => sum + (stagesMap[s] || []).length, 0);
+
+  // ── Build accounts ────────────────────────────────────────────────────────
+  const accountDefs = {
+    PAOLA: { name: 'Paola Díaz' },
+    JORGE: { name: 'Jorge Florez' },
+    JP_LEGACY: { name: 'JP Legacy Group' },
+  };
+
+  const accounts = {};
+  for (const [key, def] of Object.entries(accountDefs)) {
+    const acctTasks = tasks.filter(t => t.accounts.includes(key));
+
+    const publishedThisWeek = acctTasks.filter(t =>
+      t.completed && t.completed_at &&
+      isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+    ).length;
+
+    const publishedToday = acctTasks.filter(t =>
+      t.completed && t.completed_at &&
+      t.completed_at.slice(0, 10) === today
+    ).length;
+
+    // Days since last publish
+    const completedDates = acctTasks
+      .filter(t => t.completed && t.completed_at)
+      .map(t => t.completed_at.slice(0, 10))
+      .sort()
+      .reverse();
+    const lastPublish = completedDates[0] || null;
+    const daysSincePublish = lastPublish
+      ? Math.floor((parseDate(today) - parseDate(lastPublish)) / (1000 * 60 * 60 * 24))
+      : 999;
+
+    // Upcoming week tasks
+    const upcomingWeek = acctTasks.filter(t =>
+      t.due_on && t.due_on >= today && t.due_on <= next7End && !t.completed
+    ).sort((a, b) => a.due_on.localeCompare(b.due_on));
+
+    // Content balance: platform distribution
+    const contentBalance = {};
+    for (const t of acctTasks) {
+      for (const p of t.platforms) {
+        contentBalance[p] = (contentBalance[p] || 0) + 1;
+      }
+    }
+
+    accounts[key] = {
+      name: def.name,
+      tasks: acctTasks,
+      publishedToday,
+      publishedThisWeek,
+      daysSincePublish,
+      upcomingWeek,
+      contentBalance,
+    };
+  }
+
+  // ── Stagnated videos ──────────────────────────────────────────────────────
+  const stagnated = tasks.filter(t => t.stagnated && !t.completed);
+
+  // ── Pipeline object ───────────────────────────────────────────────────────
+  const pipeline = { stages: stagesMap, stageCounts, activeTotal };
+
+  // ── Alerts ────────────────────────────────────────────────────────────────
+  let alerts = { critical: [], attention: [] };
+  try {
+    alerts = buildAlerts(pipeline, accounts, today, weekStart, weekEnd);
+  } catch (err) {
+    console.error('[marketingReport] Alert build error:', err.message);
+  }
+
+  // ── Inventory ─────────────────────────────────────────────────────────────
+  const allActive = tasks.filter(t => !t.completed);
+  const readyToUpload = (stagesMap['Ready to upload'] || []).length;
+  const noDate = allActive.filter(t => !t.due_on).length;
+  const pausedRecoverable = (stagesMap['Paused'] || []).length;
+
+  const producedThisWeek = tasks.filter(t =>
+    t.completed && t.completed_at &&
+    isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  ).length;
+
+  const publishedThisWeek = (stagesMap['Scheduled/Publlished'] || []).filter(t =>
+    t.completed && t.completed_at &&
+    isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  ).length;
+
+  // ── Cadence ───────────────────────────────────────────────────────────────
+  const cadence = {};
+  for (const [key, goal] of Object.entries(CADENCE_GOALS)) {
+    const actual = accounts[key]
+      ? accounts[key].tasks.filter(t =>
+          t.completed && t.completed_at &&
+          isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+        ).length
+      : 0;
+    cadence[key] = { goal, actual };
+  }
+
+  // ── Team metrics ──────────────────────────────────────────────────────────
+  const teamTasks = rawTeam.map(t => ({
+    ...t,
+    assignee: t.assignee ? t.assignee.name : null,
+    completed_at: t.completed_at || null,
+    due_on: t.due_on || null,
+  }));
+
+  const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasks, weekStart, weekEnd, today);
+  const karenMetrics = calcTeamMemberMetrics('karen', teamTasks, weekStart, weekEnd, today);
+
+  const mostProductiveToday = nicoleMetrics.inProgressToday >= karenMetrics.inProgressToday
+    ? 'Nicole Zapata'
+    : 'Karen';
+
+  const team = {
+    nicole: nicoleMetrics,
+    karen: karenMetrics,
+    mostProductiveToday,
+  };
+
+  // ── AI Analysis ───────────────────────────────────────────────────────────
+  const partialData = {
+    pipeline,
+    alerts,
+    stagnated,
+    team,
+    cadence,
+  };
+
+  let aiAnalysis = '[Análisis IA no disponible]';
+  try {
+    aiAnalysis = await generateAIAnalysis(partialData);
+  } catch (err) {
+    console.error('[marketingReport] AI error:', err.message);
+  }
+
+  return {
+    today,
+    todayFormatted: formatTodayES(today),
+    generatedAt: formatTimeNowET(),
+    alerts,
+    accounts,
+    pipeline,
+    stagnated,
+    inventory: { readyToUpload, noDate, pausedRecoverable, producedThisWeek, publishedThisWeek },
+    cadence,
+    team,
+    aiAnalysis,
+  };
 }
 
 async function buildWeeklyData() {
-  const today     = todayET();
-  const weekRange = previousWeekRangeET();
-  const tasks     = await fetchAndNormalize();
-  const byAssignee= splitByTeam(tasks);
+  const today = todayET();
+  const { start: weekStart, end: weekEnd } = prevWeekRangeET();
 
-  const nicole = calcMetrics(byAssignee['Nicole Zapata'], weekRange.start, weekRange.end, today);
-  const karen  = calcMetrics(byAssignee['Karen'],         weekRange.start, weekRange.end, today);
+  let rawPipeline = [];
+  try {
+    rawPipeline = await fetchPipelineTasks();
+  } catch (err) {
+    console.error('[marketingReport] Pipeline fetch error:', err.message);
+  }
 
-  const alerts = buildCriticalAlerts(
-    nicole, karen,
-    byAssignee['Nicole Zapata'],
-    byAssignee['Karen'],
-    today
-  );
+  await delay(300);
 
-  const leaderResult = score100(nicole, karen);
-  const aiText       = await generateAIAnalysis('semanal', nicole, karen);
-  return { today, weekRange, byAssignee, metrics: { nicole, karen }, leaderResult, alerts, totalTasks: tasks.length, aiText };
+  let rawTeam = [];
+  try {
+    rawTeam = await fetchTeamOverviewTasks(weekStart);
+  } catch (err) {
+    console.error('[marketingReport] Team overview fetch error:', err.message);
+  }
+
+  const tasks = rawPipeline.map(enrichPipelineTask);
+
+  const stagesMap = {};
+  for (const stage of PIPELINE_STAGES) stagesMap[stage] = [];
+  for (const task of tasks) {
+    if (stagesMap[task.stage] !== undefined) {
+      stagesMap[task.stage].push(task);
+    }
+  }
+
+  const stageCounts = {};
+  for (const [s, arr] of Object.entries(stagesMap)) stageCounts[s] = arr.length;
+  const activeStages = PIPELINE_STAGES.filter(s => !['Scheduled/Publlished', 'Archive', 'Paused', 'Backup'].includes(s));
+  const activeTotal = activeStages.reduce((sum, s) => sum + (stagesMap[s] || []).length, 0);
+  const pipeline = { stages: stagesMap, stageCounts, activeTotal };
+
+  const accountDefs = {
+    PAOLA: { name: 'Paola Díaz' },
+    JORGE: { name: 'Jorge Florez' },
+    JP_LEGACY: { name: 'JP Legacy Group' },
+  };
+
+  const accounts = {};
+  for (const [key, def] of Object.entries(accountDefs)) {
+    const acctTasks = tasks.filter(t => t.accounts.includes(key));
+    const publishedThisWeek = acctTasks.filter(t =>
+      t.completed && t.completed_at &&
+      isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+    ).length;
+    const publishedToday = 0;
+    const daysSincePublish = 0;
+    const upcomingWeek = [];
+    const contentBalance = {};
+    for (const t of acctTasks) {
+      for (const p of t.platforms) {
+        contentBalance[p] = (contentBalance[p] || 0) + 1;
+      }
+    }
+    accounts[key] = { name: def.name, tasks: acctTasks, publishedToday, publishedThisWeek, daysSincePublish, upcomingWeek, contentBalance };
+  }
+
+  const stagnated = tasks.filter(t => t.stagnated && !t.completed);
+  const alerts = buildAlerts(pipeline, accounts, today, weekStart, weekEnd);
+
+  const readyToUpload = (stagesMap['Ready to upload'] || []).length;
+  const noDate = tasks.filter(t => !t.completed && !t.due_on).length;
+  const pausedRecoverable = (stagesMap['Paused'] || []).length;
+  const producedThisWeek = tasks.filter(t =>
+    t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  ).length;
+  const publishedThisWeek = (stagesMap['Scheduled/Publlished'] || []).filter(t =>
+    t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+  ).length;
+
+  const cadence = {};
+  for (const [key, goal] of Object.entries(CADENCE_GOALS)) {
+    const actual = accounts[key]
+      ? accounts[key].tasks.filter(t =>
+          t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
+        ).length
+      : 0;
+    cadence[key] = { goal, actual };
+  }
+
+  const teamTasks = rawTeam.map(t => ({
+    ...t,
+    assignee: t.assignee ? t.assignee.name : null,
+    completed_at: t.completed_at || null,
+    due_on: t.due_on || null,
+  }));
+
+  const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasks, weekStart, weekEnd, today);
+  const karenMetrics = calcTeamMemberMetrics('karen', teamTasks, weekStart, weekEnd, today);
+  const mostProductiveToday = nicoleMetrics.inProgressToday >= karenMetrics.inProgressToday ? 'Nicole Zapata' : 'Karen';
+  const team = { nicole: nicoleMetrics, karen: karenMetrics, mostProductiveToday };
+
+  let aiAnalysis = '[Análisis IA no disponible]';
+  try {
+    aiAnalysis = await generateAIAnalysis({ pipeline, alerts, stagnated, team, cadence });
+  } catch (err) {
+    console.error('[marketingReport] AI error:', err.message);
+  }
+
+  return {
+    weekRange: { start: weekStart, end: weekEnd },
+    today,
+    todayFormatted: formatTodayES(today),
+    generatedAt: formatTimeNowET(),
+    alerts,
+    accounts,
+    pipeline,
+    stagnated,
+    inventory: { readyToUpload, noDate, pausedRecoverable, producedThisWeek, publishedThisWeek },
+    cadence,
+    team,
+    aiAnalysis,
+  };
 }
 
 async function buildMonthlyData() {
-  const today      = todayET();
-  const monthRange = previousMonthRangeET();
-  const tasks      = await fetchAndNormalize();
-  const byAssignee = splitByTeam(tasks);
+  const today = todayET();
+  const { start: monthStart, end: monthEnd, label: monthLabel } = prevMonthRangeET();
 
-  const nicole = calcMetrics(byAssignee['Nicole Zapata'], monthRange.start, monthRange.end, today);
-  const karen  = calcMetrics(byAssignee['Karen'],         monthRange.start, monthRange.end, today);
+  let rawPipeline = [];
+  try {
+    rawPipeline = await fetchPipelineTasks();
+  } catch (err) {
+    console.error('[marketingReport] Pipeline fetch error:', err.message);
+  }
 
-  const weeks = weeksInRange(monthRange.start, monthRange.end);
-  const weeklyTrends = weeks.map((w) => ({
-    label:  w.label,
-    nicole: calcMetrics(byAssignee['Nicole Zapata'], w.start, w.end, today).completedInPeriod,
-    karen:  calcMetrics(byAssignee['Karen'],         w.start, w.end, today).completedInPeriod,
+  await delay(300);
+
+  let rawTeam = [];
+  try {
+    rawTeam = await fetchTeamOverviewTasks(monthStart);
+  } catch (err) {
+    console.error('[marketingReport] Team overview fetch error:', err.message);
+  }
+
+  const tasks = rawPipeline.map(enrichPipelineTask);
+
+  const stagesMap = {};
+  for (const stage of PIPELINE_STAGES) stagesMap[stage] = [];
+  for (const task of tasks) {
+    if (stagesMap[task.stage] !== undefined) stagesMap[task.stage].push(task);
+  }
+
+  const stageCounts = {};
+  for (const [s, arr] of Object.entries(stagesMap)) stageCounts[s] = arr.length;
+  const activeStages = PIPELINE_STAGES.filter(s => !['Scheduled/Publlished', 'Archive', 'Paused', 'Backup'].includes(s));
+  const activeTotal = activeStages.reduce((sum, s) => sum + (stagesMap[s] || []).length, 0);
+  const pipeline = { stages: stagesMap, stageCounts, activeTotal };
+
+  const accountDefs = {
+    PAOLA: { name: 'Paola Díaz' },
+    JORGE: { name: 'Jorge Florez' },
+    JP_LEGACY: { name: 'JP Legacy Group' },
+  };
+
+  const accounts = {};
+  for (const [key, def] of Object.entries(accountDefs)) {
+    const acctTasks = tasks.filter(t => t.accounts.includes(key));
+    const publishedThisWeek = acctTasks.filter(t =>
+      t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), monthStart, monthEnd)
+    ).length;
+    const contentBalance = {};
+    for (const t of acctTasks) {
+      for (const p of t.platforms) contentBalance[p] = (contentBalance[p] || 0) + 1;
+    }
+    accounts[key] = { name: def.name, tasks: acctTasks, publishedToday: 0, publishedThisWeek, daysSincePublish: 0, upcomingWeek: [], contentBalance };
+  }
+
+  const stagnated = tasks.filter(t => t.stagnated && !t.completed);
+  const alerts = buildAlerts(pipeline, accounts, today, monthStart, monthEnd);
+
+  const readyToUpload = (stagesMap['Ready to upload'] || []).length;
+  const noDate = tasks.filter(t => !t.completed && !t.due_on).length;
+  const pausedRecoverable = (stagesMap['Paused'] || []).length;
+  const producedThisWeek = tasks.filter(t =>
+    t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), monthStart, monthEnd)
+  ).length;
+  const publishedThisWeek = (stagesMap['Scheduled/Publlished'] || []).filter(t =>
+    t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), monthStart, monthEnd)
+  ).length;
+
+  const cadence = {};
+  for (const [key, goal] of Object.entries(CADENCE_GOALS)) {
+    const actual = accounts[key]
+      ? accounts[key].tasks.filter(t =>
+          t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), monthStart, monthEnd)
+        ).length
+      : 0;
+    cadence[key] = { goal: goal * 4, actual }; // Monthly goal = weekly * 4
+  }
+
+  const teamTasks = rawTeam.map(t => ({
+    ...t,
+    assignee: t.assignee ? t.assignee.name : null,
+    completed_at: t.completed_at || null,
+    due_on: t.due_on || null,
   }));
 
-  const alerts = buildCriticalAlerts(
-    nicole, karen,
-    byAssignee['Nicole Zapata'],
-    byAssignee['Karen'],
-    today
-  );
+  const nicoleMetrics = calcTeamMemberMetrics('Nicole Zapata', teamTasks, monthStart, monthEnd, today);
+  const karenMetrics = calcTeamMemberMetrics('karen', teamTasks, monthStart, monthEnd, today);
+  const mostProductiveToday = nicoleMetrics.completedWeek >= karenMetrics.completedWeek ? 'Nicole Zapata' : 'Karen';
+  const team = { nicole: nicoleMetrics, karen: karenMetrics, mostProductiveToday };
 
-  const leaderResult = score100(nicole, karen);
-  const aiText       = await generateAIAnalysis('mensual', nicole, karen);
-  return { today, monthRange, byAssignee, metrics: { nicole, karen }, leaderResult, weeklyTrends, alerts, totalTasks: tasks.length, aiText };
+  let aiAnalysis = '[Análisis IA no disponible]';
+  try {
+    aiAnalysis = await generateAIAnalysis({ pipeline, alerts, stagnated, team, cadence });
+  } catch (err) {
+    console.error('[marketingReport] AI error:', err.message);
+  }
+
+  return {
+    monthRange: { start: monthStart, end: monthEnd, label: monthLabel },
+    today,
+    todayFormatted: formatTodayES(today),
+    generatedAt: formatTimeNowET(),
+    alerts,
+    accounts,
+    pipeline,
+    stagnated,
+    inventory: { readyToUpload, noDate, pausedRecoverable, producedThisWeek, publishedThisWeek },
+    cadence,
+    team,
+    aiAnalysis,
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HTML BUILDERS
+// TEXT REPORT BUILDER
 // ══════════════════════════════════════════════════════════════════════════════
 
-function buildDailyHTML(data) {
-  const { today, yesterday, metrics: { nicole, karen }, byAssignee, alerts, totalTasks, aiText } = data;
-  const totalOverdue    = nicole.overdueCount + karen.overdueCount;
-  const totalCompleted  = nicole.completedInPeriod + karen.completedInPeriod;
-  const totalInProgress = nicole.inProgressCount + karen.inProgressCount;
-  const totalPlanned    = byAssignee['Nicole Zapata'].filter((t) => !t.completed && t.dueDate === today).length
-                        + byAssignee['Karen'].filter((t) => !t.completed && t.dueDate === today).length;
+function buildDailyText(data) {
+  const HR = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
+  const lines = [];
 
-  const teamSummary = statBoxRow([
-    { value: totalTasks,      label: 'Total proyecto',      color: '#FFFFFF' },
-    { value: totalCompleted,  label: 'Completadas ayer',    color: '#4CAF50' },
-    { value: totalInProgress, label: 'En progreso',         color: '#4FC3F7' },
-    { value: totalOverdue,    label: 'Vencidas',            color: totalOverdue > 0 ? '#FF4444' : '#555555' },
-    { value: totalPlanned,    label: 'Planificadas hoy',    color: '#FFD700' },
-  ]);
+  lines.push(`📊 REPORTE DIARIO MARKETING JP — ${data.todayFormatted}`);
+  lines.push(`Generado: ${data.generatedAt} ET`);
+  lines.push(HR);
+  lines.push('');
 
-  // Quick Nicole vs Karen daily comparison
-  const nWins = nicole.completedInPeriod > karen.completedInPeriod;
-  const kWins = karen.completedInPeriod  > nicole.completedInPeriod;
-  const quickCompare = `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-      <tr><td colspan="2" style="padding:8px 14px;border-bottom:1px solid #141414;">
-        <span style="color:#888888;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">⚔️ Comparativo del Día</span>
-      </td></tr>
-      <tr>
-        <td style="padding:14px;text-align:center;border-right:1px solid #141414;background:${nWins ? '#081408' : '#0A0A0A'};">
-          <div style="color:#C9A84C;font-size:10px;letter-spacing:1px;font-family:Arial,sans-serif;">NICOLE ZAPATA</div>
-          <div style="color:${nWins ? '#4CAF50' : '#888888'};font-size:30px;font-weight:bold;font-family:Arial,sans-serif;">${nicole.completedInPeriod}${nWins ? ' 🏆' : ''}</div>
-          <div style="color:#444444;font-size:9px;font-family:Arial,sans-serif;">completadas · ${nicole.overdueCount} vencidas · ${nicole.inProgressCount} en progreso</div>
-        </td>
-        <td style="padding:14px;text-align:center;background:${kWins ? '#081408' : '#0A0A0A'};">
-          <div style="color:#4FC3F7;font-size:10px;letter-spacing:1px;font-family:Arial,sans-serif;">KAREN</div>
-          <div style="color:${kWins ? '#4CAF50' : '#888888'};font-size:30px;font-weight:bold;font-family:Arial,sans-serif;">${karen.completedInPeriod}${kWins ? ' 🏆' : ''}</div>
-          <div style="color:#444444;font-size:9px;font-family:Arial,sans-serif;">completadas · ${karen.overdueCount} vencidas · ${karen.inProgressCount} en progreso</div>
-        </td>
-      </tr>
+  // Alerts
+  lines.push('🚨 ALERTAS CRÍTICAS');
+  if (data.alerts.critical.length === 0) {
+    lines.push('✅ Sin alertas críticas');
+  } else {
+    for (const a of data.alerts.critical) lines.push(`🔴 ${a}`);
+  }
+  if (data.alerts.attention.length > 0) {
+    lines.push('');
+    lines.push('⚠️ ATENCIÓN');
+    for (const a of data.alerts.attention) lines.push(`🟡 ${a}`);
+  }
+  lines.push('');
+
+  // Accounts
+  const accountOrder = [
+    { key: 'PAOLA', label: '👤 PAOLA DÍAZ' },
+    { key: 'JORGE', label: '👤 JORGE FLOREZ' },
+    { key: 'JP_LEGACY', label: '👤 JP LEGACY GROUP' },
+  ];
+
+  for (const { key, label } of accountOrder) {
+    lines.push(HR);
+    lines.push(label);
+    lines.push('');
+    const acct = data.accounts[key];
+    if (!acct) { lines.push('[Datos no disponibles]'); lines.push(''); continue; }
+
+    const goal = CADENCE_GOALS[key];
+    lines.push(`Publicados hoy: ${acct.publishedToday} | Esta semana: ${acct.publishedThisWeek}/${goal}`);
+    lines.push(`Días sin publicar: ${acct.daysSincePublish}`);
+
+    // Content balance
+    const balEntries = Object.entries(acct.contentBalance);
+    if (balEntries.length > 0) {
+      const total = balEntries.reduce((s, [, v]) => s + v, 0);
+      const balStr = balEntries.map(([p, n]) => `${p} ${Math.round((n / total) * 100)}%`).join(' | ');
+      lines.push(`Balance de contenido (7 días): ${balStr}`);
+    }
+
+    lines.push('');
+    lines.push('📅 Próximos 7 días:');
+    if (acct.upcomingWeek.length === 0) {
+      lines.push('  Sin contenido programado');
+    } else {
+      for (const t of acct.upcomingWeek) {
+        lines.push(`${t.due_on} — ${t.name}`);
+        if (t.platforms.length > 0) lines.push(`  📱 ${t.platforms.join(', ')}`);
+        if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
+        else lines.push('  ⚠️ Sin archivo Dropbox');
+        lines.push(`  Stage: ${t.stage}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // Pipeline
+  lines.push(HR);
+  lines.push('🎬 PIPELINE GENERAL — Estado por Stage');
+  lines.push('');
+  const activeStageList = [
+    'Concept/Idea', 'Resources pending', 'Ready to edit',
+    'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload',
+  ];
+  for (const s of activeStageList) {
+    const count = data.pipeline.stageCounts[s] || 0;
+    let extra = '';
+    if (s === 'Resources pending') {
+      const blocked = (data.pipeline.stages[s] || []).filter(t => t.days_in_stage > 2).length;
+      if (blocked > 0) extra = ` [${blocked} bloqueados ⚠️]`;
+    }
+    if (s === 'Aproved' && count === 0) extra = ' [⚠️ ALERTA]';
+    lines.push(`${s.padEnd(22)} ${count} videos${extra}`);
+  }
+  lines.push('──────────────────────');
+  lines.push(`Pipeline activo total: ${data.pipeline.activeTotal} videos`);
+  lines.push('');
+  lines.push(`Scheduled/Published   ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} (histórico total)`);
+  lines.push(`Paused                ${data.pipeline.stageCounts['Paused'] || 0} | Backup: ${data.pipeline.stageCounts['Backup'] || 0}`);
+  lines.push('');
+
+  // Stagnated
+  lines.push(HR);
+  lines.push('⏱️ VIDEOS ESTANCADOS (+3 días sin moverse)');
+  lines.push('');
+  if (data.stagnated.length === 0) {
+    lines.push('✅ Sin videos estancados hoy');
+  } else {
+    for (const t of data.stagnated) {
+      lines.push(t.name);
+      lines.push(`  Stage: ${t.stage} | Lleva: ${t.days_in_stage} días`);
+      lines.push(`  Cuenta: ${t.accounts.join(', ') || '—'}`);
+      lines.push(`  Responsable: ${t.assignee || '—'}`);
+      if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
+    }
+  }
+  lines.push('');
+
+  // Inventory
+  lines.push(HR);
+  lines.push('📦 INVENTARIO');
+  lines.push('');
+  lines.push(`Ready to upload: ${data.inventory.readyToUpload} videos listos para publicar`);
+  lines.push(`Sin fecha asignada: ${data.inventory.noDate} videos`);
+  lines.push(`Paused recuperables: ${data.inventory.pausedRecoverable}`);
+  lines.push('');
+  lines.push('Ratio producción/publicación esta semana:');
+  const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
+  lines.push(`  Terminados: ${data.inventory.producedThisWeek} | Publicados: ${data.inventory.publishedThisWeek} | ${surplus >= 0 ? `Superávit: +${surplus}` : `Déficit: ${surplus}`}`);
+  lines.push('');
+
+  // Cadence
+  lines.push(HR);
+  lines.push('📊 CADENCIA SEMANAL');
+  lines.push('');
+  lines.push('             Meta    Real    Estado');
+  const cadenceRows = [
+    { label: 'Paola', key: 'PAOLA' },
+    { label: 'Jorge', key: 'JORGE' },
+    { label: 'JP Legacy', key: 'JP_LEGACY' },
+  ];
+  for (const row of cadenceRows) {
+    const c = data.cadence[row.key];
+    const pct = c.goal > 0 ? c.actual / c.goal : 0;
+    const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
+    lines.push(`${row.label.padEnd(13)} ${String(c.goal + '/sem').padEnd(8)} ${String(c.actual + '/sem').padEnd(8)} ${status}`);
+  }
+  lines.push('');
+
+  // Team
+  lines.push(HR);
+  lines.push('👥 EQUIPO — Semana actual');
+  lines.push('');
+  lines.push('👤 Nicole Zapata');
+  lines.push(`  Completadas esta semana: ${data.team.nicole.completedWeek}`);
+  lines.push(`  En progreso hoy: ${data.team.nicole.inProgressToday}`);
+  lines.push(`  Pendientes hoy: ${data.team.nicole.pendingToday}`);
+  lines.push(`  Racha: ${data.team.nicole.streak} días | Tasa a tiempo: ${data.team.nicole.onTimeRate}%`);
+  lines.push('');
+  lines.push('👤 Karen');
+  lines.push(`  Completadas esta semana: ${data.team.karen.completedWeek}`);
+  lines.push(`  En progreso hoy: ${data.team.karen.inProgressToday}`);
+  lines.push(`  Pendientes hoy: ${data.team.karen.pendingToday}`);
+  lines.push(`  Racha: ${data.team.karen.streak} días | Tasa a tiempo: ${data.team.karen.onTimeRate}%`);
+  lines.push('');
+  const mostProd = data.team.mostProductiveToday;
+  const mostProdCount = mostProd === 'Nicole Zapata'
+    ? data.team.nicole.inProgressToday
+    : data.team.karen.inProgressToday;
+  lines.push(`🏆 Más productiva hoy: ${mostProd} con ${mostProdCount} tareas`);
+  lines.push('');
+
+  // AI
+  lines.push(HR);
+  lines.push('🤖 Análisis IA — JP Legacy Agent');
+  lines.push(data.aiAnalysis);
+  lines.push('');
+  lines.push(`JP Legacy Agent · Auto-generado · ${data.todayFormatted} ${data.generatedAt} ET`);
+
+  return lines.join('\n');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HTML EMAIL BUILDERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+function htmlWrapper(title, body) {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+</head>
+<body style="margin:0;padding:0;background:#111111;font-family:Arial,sans-serif;color:#FFFFFF;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#111111;">
+  <tr><td align="center" style="padding:20px 10px;">
+    <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#1A1A1A;border-radius:8px;overflow:hidden;">
+      ${body}
     </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`;
+  </td></tr>
+</table>
+</body>
+</html>`;
+}
 
-  const body = [
-    htmlHeader(
-      '📅 Reporte Diario Marketing',
-      `${formatDateES(today)} · America/New_York`
-    ),
-    criticalAlertsBlock(alerts),
-    `<tr><td><table width="100%" cellpadding="0" cellspacing="0">${teamSummary}</table></td></tr>`,
-    `<tr><td style="height:6px;"></td></tr>`,
-    quickCompare,
-    dailyAssigneeSection('Nicole Zapata', byAssignee['Nicole Zapata'], yesterday, today),
-    dailyAssigneeSection('Karen',         byAssignee['Karen'],         yesterday, today),
-    aiBlock(aiText),
-  ].join('');
+function htmlSection(content) {
+  return `<tr><td style="padding:20px 24px;border-bottom:1px solid #2A2A2A;">${content}</td></tr>`;
+}
 
-  return htmlWrap(body);
+function htmlHeader(title, subtitle = '') {
+  return `<tr><td style="background:#0D0D0D;padding:24px;border-bottom:2px solid #333;">
+    <h1 style="margin:0;font-size:20px;font-weight:bold;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">${title}</h1>
+    ${subtitle ? `<p style="margin:6px 0 0;font-size:13px;color:#888;">${subtitle}</p>` : ''}
+  </td></tr>`;
+}
+
+function htmlSectionTitle(title) {
+  return `<h2 style="margin:0 0 12px;font-size:14px;font-weight:bold;color:#AAAAAA;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #333;padding-bottom:8px;">${title}</h2>`;
+}
+
+function buildAlertBadge(type, text) {
+  const bg = type === 'critical' ? '#FF4444' : '#FFD700';
+  const fg = type === 'critical' ? '#FFFFFF' : '#000000';
+  const icon = type === 'critical' ? '🔴' : '🟡';
+  return `<div style="background:${bg};color:${fg};padding:8px 12px;border-radius:4px;margin-bottom:6px;font-size:13px;">${icon} ${text}</div>`;
+}
+
+function buildDailyHTML(data) {
+  const sections = [];
+
+  // Header
+  sections.push(htmlHeader(
+    '📊 Reporte Diario Marketing JP',
+    `${data.todayFormatted} · Generado: ${data.generatedAt} ET`
+  ));
+
+  // Alerts
+  let alertsContent = htmlSectionTitle('🚨 Alertas');
+  if (data.alerts.critical.length === 0 && data.alerts.attention.length === 0) {
+    alertsContent += '<p style="color:#4CAF50;margin:0;">✅ Sin alertas hoy</p>';
+  } else {
+    for (const a of data.alerts.critical) alertsContent += buildAlertBadge('critical', a);
+    for (const a of data.alerts.attention) alertsContent += buildAlertBadge('attention', a);
+  }
+  sections.push(htmlSection(alertsContent));
+
+  // Accounts
+  const accountOrder = [
+    { key: 'PAOLA', icon: '👤', label: 'Paola Díaz' },
+    { key: 'JORGE', icon: '👤', label: 'Jorge Florez' },
+    { key: 'JP_LEGACY', icon: '🏢', label: 'JP Legacy Group' },
+  ];
+
+  for (const { key, icon, label } of accountOrder) {
+    const acct = data.accounts[key];
+    if (!acct) continue;
+    const goal = CADENCE_GOALS[key];
+    let ac = htmlSectionTitle(`${icon} ${label}`);
+    ac += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
+    ac += `<tr><td>Publicados hoy:</td><td><strong style="color:#FFF;">${acct.publishedToday}</strong></td>`;
+    ac += `<td>Esta semana:</td><td><strong style="color:#FFF;">${acct.publishedThisWeek}/${goal}</strong></td></tr>`;
+    ac += `<tr><td>Días sin publicar:</td><td colspan="3"><strong style="color:${acct.daysSincePublish > 4 ? '#FF4444' : '#FFF'};">${acct.daysSincePublish}</strong></td></tr>`;
+    ac += `</table>`;
+
+    if (acct.upcomingWeek.length > 0) {
+      ac += `<p style="font-size:12px;color:#888;margin:12px 0 6px;">📅 PRÓXIMOS 7 DÍAS</p>`;
+      for (const t of acct.upcomingWeek) {
+        ac += `<div style="background:#222;border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:13px;">`;
+        ac += `<strong style="color:#FFF;">${t.due_on}</strong> — ${t.name}`;
+        if (t.platforms.length > 0) ac += `<br><span style="color:#888;">📱 ${t.platforms.join(', ')}</span>`;
+        if (t.links.dropbox) ac += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
+        else ac += `<br><span style="color:#FF8800;font-size:12px;">⚠️ Sin archivo Dropbox</span>`;
+        ac += `<br><span style="color:#666;font-size:12px;">Stage: ${t.stage}</span>`;
+        ac += `</div>`;
+      }
+    } else {
+      ac += `<p style="color:#FF8800;font-size:13px;margin:8px 0 0;">⚠️ Sin contenido programado en próximos 7 días</p>`;
+    }
+    sections.push(htmlSection(ac));
+  }
+
+  // Pipeline
+  let pc = htmlSectionTitle('🎬 Pipeline General — Por Stage');
+  pc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  pc += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Stage</th><th style="text-align:right;color:#888;">Videos</th></tr>`;
+  const activeStageList = ['Concept/Idea', 'Resources pending', 'Ready to edit', 'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload'];
+  for (const s of activeStageList) {
+    const count = data.pipeline.stageCounts[s] || 0;
+    const warn = (s === 'Aproved' && count === 0) || (s === 'Ready to upload' && count === 0);
+    pc += `<tr style="border-bottom:1px solid #2A2A2A;">
+      <td style="color:#CCC;">${s}</td>
+      <td style="text-align:right;color:${warn ? '#FF4444' : '#FFF'};font-weight:${warn ? 'bold' : 'normal'};">${count}${warn ? ' ⚠️' : ''}</td>
+    </tr>`;
+  }
+  pc += `<tr style="border-top:2px solid #444;">
+    <td style="color:#FFF;font-weight:bold;">Pipeline activo total</td>
+    <td style="text-align:right;color:#FFF;font-weight:bold;">${data.pipeline.activeTotal}</td>
+  </tr>`;
+  pc += `</table>`;
+  pc += `<p style="font-size:12px;color:#666;margin:8px 0 0;">Scheduled/Published: ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} · Paused: ${data.pipeline.stageCounts['Paused'] || 0} · Backup: ${data.pipeline.stageCounts['Backup'] || 0}</p>`;
+  sections.push(htmlSection(pc));
+
+  // Stagnated
+  let sc = htmlSectionTitle('⏱️ Videos Estancados (+3 días)');
+  if (data.stagnated.length === 0) {
+    sc += '<p style="color:#4CAF50;margin:0;">✅ Sin videos estancados hoy</p>';
+  } else {
+    for (const t of data.stagnated) {
+      sc += `<div style="background:#2A1800;border-left:3px solid #FF8800;padding:8px 10px;margin-bottom:6px;font-size:13px;border-radius:2px;">`;
+      sc += `<strong style="color:#FF8800;">${t.name}</strong>`;
+      sc += `<br><span style="color:#AAA;">Stage: ${t.stage} | ${t.days_in_stage} días | ${t.assignee || '—'}</span>`;
+      if (t.accounts.length > 0) sc += `<br><span style="color:#888;">Cuenta: ${t.accounts.join(', ')}</span>`;
+      if (t.links.dropbox) sc += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
+      sc += `</div>`;
+    }
+  }
+  sections.push(htmlSection(sc));
+
+  // Inventory
+  let ic = htmlSectionTitle('📦 Inventario');
+  ic += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
+  ic += `<tr><td>Ready to upload:</td><td><strong style="color:#FFF;">${data.inventory.readyToUpload} videos</strong></td></tr>`;
+  ic += `<tr><td>Sin fecha asignada:</td><td><strong style="color:${data.inventory.noDate > 24 ? '#FF4444' : '#FFF'};">${data.inventory.noDate} videos</strong></td></tr>`;
+  ic += `<tr><td>Paused recuperables:</td><td><strong style="color:#FFF;">${data.inventory.pausedRecoverable}</strong></td></tr>`;
+  const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
+  ic += `<tr><td>Producidos esta semana:</td><td><strong style="color:#FFF;">${data.inventory.producedThisWeek}</strong></td></tr>`;
+  ic += `<tr><td>Publicados esta semana:</td><td><strong style="color:#FFF;">${data.inventory.publishedThisWeek}</strong></td></tr>`;
+  ic += `<tr><td>${surplus >= 0 ? 'Superávit' : 'Déficit'}:</td><td><strong style="color:${surplus >= 0 ? '#4CAF50' : '#FF4444'};">${surplus >= 0 ? '+' : ''}${surplus}</strong></td></tr>`;
+  ic += `</table>`;
+  sections.push(htmlSection(ic));
+
+  // Cadence
+  let cad = htmlSectionTitle('📊 Cadencia Semanal');
+  cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
+  const cadenceRows = [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }];
+  for (const row of cadenceRows) {
+    const c = data.cadence[row.key];
+    const pct = c.goal > 0 ? c.actual / c.goal : 0;
+    const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
+    cad += `<tr style="border-bottom:1px solid #2A2A2A;">
+      <td style="color:#CCC;">${row.label}</td>
+      <td style="text-align:center;color:#888;">${c.goal}/sem</td>
+      <td style="text-align:center;color:#FFF;font-weight:bold;">${c.actual}/sem</td>
+      <td style="text-align:center;">${status}</td>
+    </tr>`;
+  }
+  cad += `</table>`;
+  sections.push(htmlSection(cad));
+
+  // Team
+  let tc = htmlSectionTitle('👥 Equipo — Semana Actual');
+  tc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  tc += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Métrica</th><th style="color:#888;">Nicole Zapata</th><th style="color:#888;">Karen</th></tr>`;
+  const teamRows = [
+    ['Completadas semana', data.team.nicole.completedWeek, data.team.karen.completedWeek],
+    ['En progreso hoy', data.team.nicole.inProgressToday, data.team.karen.inProgressToday],
+    ['Pendientes hoy', data.team.nicole.pendingToday, data.team.karen.pendingToday],
+    ['Racha (días)', data.team.nicole.streak, data.team.karen.streak],
+    ['Tasa a tiempo', `${data.team.nicole.onTimeRate}%`, `${data.team.karen.onTimeRate}%`],
+  ];
+  for (const [label, n, k] of teamRows) {
+    tc += `<tr style="border-bottom:1px solid #2A2A2A;"><td style="color:#CCC;">${label}</td><td style="text-align:center;color:#FFF;">${n}</td><td style="text-align:center;color:#FFF;">${k}</td></tr>`;
+  }
+  tc += `</table>`;
+  tc += `<p style="font-size:12px;color:#888;margin:8px 0 0;">🏆 Más productiva hoy: <strong style="color:#FFF;">${data.team.mostProductiveToday}</strong></p>`;
+  sections.push(htmlSection(tc));
+
+  // AI Analysis
+  let ai = htmlSectionTitle('🤖 Análisis IA — JP Legacy Agent');
+  ai += `<p style="font-size:14px;color:#CCC;line-height:1.6;margin:0;">${data.aiAnalysis}</p>`;
+  sections.push(htmlSection(ai));
+
+  // Footer
+  sections.push(`<tr><td style="padding:16px 24px;background:#0D0D0D;text-align:center;">
+    <p style="margin:0;font-size:11px;color:#555;">JP Legacy Agent · Auto-generado · ${data.todayFormatted} ${data.generatedAt} ET</p>
+  </td></tr>`);
+
+  return htmlWrapper('Reporte Diario Marketing JP', sections.join('\n'));
 }
 
 function buildWeeklyHTML(data) {
-  const { today, weekRange, metrics: { nicole, karen }, byAssignee, leaderResult, alerts, totalTasks, aiText } = data;
-  const totalOverdue   = nicole.overdueCount + karen.overdueCount;
-  const totalCompleted = nicole.completedInPeriod + karen.completedInPeriod;
-  const avgOnTime      = [nicole.onTimeRate, karen.onTimeRate].filter((n) => n !== null);
-  const avgOnTimeStr   = avgOnTime.length > 0
-    ? `${(avgOnTime.reduce((s, n) => s + n, 0) / avgOnTime.length).toFixed(0)}%`
-    : '—';
+  const range = data.weekRange
+    ? `Semana ${data.weekRange.start} — ${data.weekRange.end}`
+    : data.todayFormatted;
+  const sections = [];
 
-  const teamSummary = statBoxRow([
-    { value: totalCompleted, label: 'Completadas semana', color: '#4CAF50' },
-    { value: avgOnTimeStr,   label: 'Cumplimiento prom.',  color: '#C9A84C' },
-    { value: totalOverdue,   label: 'Vencidas',            color: totalOverdue > 0 ? '#FF4444' : '#555555' },
-    { value: totalTasks,     label: 'Total proyecto',      color: '#FFFFFF' },
-  ]);
+  sections.push(htmlHeader(
+    '📊 Reporte Semanal Marketing JP',
+    `${range} · Generado: ${data.generatedAt} ET`
+  ));
 
-  const body = [
-    htmlHeader(
-      '📊 Reporte Semanal Marketing',
-      `Semana del ${formatDateES(weekRange.start)} al ${formatDateES(weekRange.end)}`
-    ),
-    criticalAlertsBlock(alerts),
-    `<tr><td><table width="100%" cellpadding="0" cellspacing="0">${teamSummary}</table></td></tr>`,
-    `<tr><td style="height:8px;"></td></tr>`,
-    weeklyAssigneeSection('Nicole Zapata', byAssignee['Nicole Zapata'], weekRange, today),
-    weeklyAssigneeSection('Karen',         byAssignee['Karen'],         weekRange, today),
-    comparisonSection(nicole, karen, leaderResult),
-    aiBlock(aiText),
-  ].join('');
+  // Alerts
+  let alertsContent = htmlSectionTitle('🚨 Alertas de la Semana');
+  if (data.alerts.critical.length === 0 && data.alerts.attention.length === 0) {
+    alertsContent += '<p style="color:#4CAF50;margin:0;">✅ Sin alertas esta semana</p>';
+  } else {
+    for (const a of data.alerts.critical) alertsContent += buildAlertBadge('critical', a);
+    for (const a of data.alerts.attention) alertsContent += buildAlertBadge('attention', a);
+  }
+  sections.push(htmlSection(alertsContent));
 
-  return htmlWrap(body);
+  // Cadence
+  let cad = htmlSectionTitle('📊 Cadencia de la Semana');
+  cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
+  for (const row of [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }]) {
+    const c = data.cadence[row.key];
+    const pct = c.goal > 0 ? c.actual / c.goal : 0;
+    const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
+    cad += `<tr style="border-bottom:1px solid #2A2A2A;"><td style="color:#CCC;">${row.label}</td><td style="text-align:center;color:#888;">${c.goal}/sem</td><td style="text-align:center;color:#FFF;font-weight:bold;">${c.actual}/sem</td><td style="text-align:center;">${status}</td></tr>`;
+  }
+  cad += `</table>`;
+  sections.push(htmlSection(cad));
+
+  // Pipeline
+  let pc = htmlSectionTitle('🎬 Pipeline');
+  pc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  for (const s of ['Concept/Idea', 'Resources pending', 'Ready to edit', 'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload']) {
+    pc += `<tr style="border-bottom:1px solid #2A2A2A;"><td style="color:#CCC;">${s}</td><td style="text-align:right;color:#FFF;">${data.pipeline.stageCounts[s] || 0}</td></tr>`;
+  }
+  pc += `<tr><td style="color:#FFF;font-weight:bold;">Total activo</td><td style="text-align:right;color:#FFF;font-weight:bold;">${data.pipeline.activeTotal}</td></tr>`;
+  pc += `</table>`;
+  sections.push(htmlSection(pc));
+
+  // Team
+  let tc = htmlSectionTitle('👥 Equipo');
+  tc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  tc += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Métrica</th><th style="color:#888;">Nicole</th><th style="color:#888;">Karen</th></tr>`;
+  tc += `<tr><td style="color:#CCC;">Completadas</td><td style="text-align:center;color:#FFF;">${data.team.nicole.completedWeek}</td><td style="text-align:center;color:#FFF;">${data.team.karen.completedWeek}</td></tr>`;
+  tc += `<tr><td style="color:#CCC;">Tasa a tiempo</td><td style="text-align:center;color:#FFF;">${data.team.nicole.onTimeRate}%</td><td style="text-align:center;color:#FFF;">${data.team.karen.onTimeRate}%</td></tr>`;
+  tc += `</table>`;
+  sections.push(htmlSection(tc));
+
+  // AI
+  let ai = htmlSectionTitle('🤖 Análisis IA');
+  ai += `<p style="font-size:14px;color:#CCC;line-height:1.6;margin:0;">${data.aiAnalysis}</p>`;
+  sections.push(htmlSection(ai));
+
+  sections.push(`<tr><td style="padding:16px 24px;background:#0D0D0D;text-align:center;"><p style="margin:0;font-size:11px;color:#555;">JP Legacy Agent · Reporte Semanal · ${range}</p></td></tr>`);
+
+  return htmlWrapper('Reporte Semanal Marketing JP', sections.join('\n'));
 }
 
 function buildMonthlyHTML(data) {
-  const { today, monthRange, metrics: { nicole, karen }, byAssignee, leaderResult, weeklyTrends, alerts, totalTasks, aiText } = data;
-  const { leader, nicoleScore, karenScore } = leaderResult;
-  const totalCompleted = nicole.completedInPeriod + karen.completedInPeriod;
-  const totalOverdue   = nicole.overdueCount + karen.overdueCount;
+  const range = data.monthRange ? data.monthRange.label : data.todayFormatted;
+  const sections = [];
 
-  const teamSummary = statBoxRow([
-    { value: totalCompleted,           label: 'Completadas mes',  color: '#4CAF50' },
-    { value: nicole.completedInPeriod, label: 'Nicole',           color: '#C9A84C' },
-    { value: karen.completedInPeriod,  label: 'Karen',            color: '#4FC3F7' },
-    { value: totalOverdue,             label: 'Vencidas',         color: totalOverdue > 0 ? '#FF4444' : '#555555' },
-    { value: totalTasks,               label: 'Total proyecto',   color: '#FFFFFF' },
-  ]);
+  sections.push(htmlHeader(
+    '📊 Reporte Mensual Marketing JP',
+    `${range} · Generado: ${data.generatedAt} ET`
+  ));
 
-  const trendRows = weeklyTrends.map((w) =>
-    `<tr>
-      <td style="padding:6px 12px;border-bottom:1px solid #141414;color:#888888;font-size:11px;font-family:Arial,sans-serif;">${w.label}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #141414;text-align:center;color:#C9A84C;font-size:12px;font-weight:bold;font-family:Arial,sans-serif;">${w.nicole}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #141414;text-align:center;color:#4FC3F7;font-size:12px;font-weight:bold;font-family:Arial,sans-serif;">${w.karen}</td>
-    </tr>`
-  ).join('');
-
-  const trendsSection = weeklyTrends.length > 0
-    ? `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0A0A0A;border:1px solid #1E1E1E;border-radius:8px;overflow:hidden;">
-      <tr><td colspan="3" style="padding:8px 14px;border-bottom:1px solid #141414;">
-        <span style="color:#888888;font-size:10px;letter-spacing:2px;text-transform:uppercase;font-family:Arial,sans-serif;">📈 Tendencia Semanal del Mes</span>
-      </td></tr>
-      <tr>
-        <td style="padding:5px 12px;border-bottom:1px solid #141414;color:#2A2A2A;font-size:9px;font-family:Arial,sans-serif;">SEMANA</td>
-        <td style="padding:5px 12px;border-bottom:1px solid #141414;color:#C9A84C;font-size:9px;font-family:Arial,sans-serif;text-align:center;">NICOLE</td>
-        <td style="padding:5px 12px;border-bottom:1px solid #141414;color:#4FC3F7;font-size:9px;font-family:Arial,sans-serif;text-align:center;">KAREN</td>
-      </tr>
-      ${trendRows}
-    </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`
-    : '';
-
-  // Collaboradora del Mes banner
-  const mesLeaderBanner = leader !== 'Empate'
-    ? `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(#0D1208,#081408);border:2px solid #C9A84C;border-radius:8px;">
-      <tr><td style="padding:20px;text-align:center;">
-        <div style="color:#C9A84C;font-size:11px;letter-spacing:4px;text-transform:uppercase;font-family:Arial,sans-serif;">🏆 COLABORADORA DEL MES</div>
-        <div style="color:#FFFFFF;font-size:26px;font-weight:bold;margin:10px 0;font-family:Arial,sans-serif;">${leader}</div>
-        <div style="color:#555555;font-size:11px;font-family:Arial,sans-serif;">Nicole ${nicoleScore} pts — Karen ${karenScore} pts</div>
-        <div style="color:#333333;font-size:10px;margin-top:6px;font-family:Arial,sans-serif;">${leaderResult.reasons.join(' · ')}</div>
-      </td></tr>
-    </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`
-    : `<tr><td>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#141414;border:1px solid #1E1E1E;border-radius:8px;">
-      <tr><td style="padding:16px;text-align:center;">
-        <div style="color:#888888;font-size:13px;font-family:Arial,sans-serif;">🤝 Empate técnico este mes — Nicole ${nicoleScore} pts · Karen ${karenScore} pts</div>
-      </td></tr>
-    </table>
-  </td></tr><tr><td style="height:10px;"></td></tr>`;
-
-  const body = [
-    htmlHeader(
-      '📆 Reporte Mensual Marketing',
-      `${monthRange.label} · America/New_York`
-    ),
-    criticalAlertsBlock(alerts),
-    `<tr><td><table width="100%" cellpadding="0" cellspacing="0">${teamSummary}</table></td></tr>`,
-    `<tr><td style="height:8px;"></td></tr>`,
-    trendsSection,
-    monthlyAssigneeSection('Nicole Zapata', byAssignee['Nicole Zapata'], monthRange, today),
-    monthlyAssigneeSection('Karen',         byAssignee['Karen'],         monthRange, today),
-    comparisonSection(nicole, karen, leaderResult),
-    mesLeaderBanner,
-    aiBlock(aiText),
-  ].join('');
-
-  return htmlWrap(body);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// REPORT SENDERS
-// ══════════════════════════════════════════════════════════════════════════════
-
-async function sendMarketingEmail(subject, html) {
-  if (!process.env.RESEND_API_KEY) {
-    console.warn('[Marketing] Email skipped — RESEND_API_KEY no configurado');
-    return;
+  let alertsContent = htmlSectionTitle('🚨 Resumen de Alertas');
+  if (data.alerts.critical.length === 0 && data.alerts.attention.length === 0) {
+    alertsContent += '<p style="color:#4CAF50;margin:0;">✅ Mes sin alertas críticas</p>';
+  } else {
+    for (const a of data.alerts.critical) alertsContent += buildAlertBadge('critical', a);
+    for (const a of data.alerts.attention) alertsContent += buildAlertBadge('attention', a);
   }
-  const resend = new Resend(process.env.RESEND_API_KEY);
-  const { error } = await resend.emails.send({
-    from:    'JP Legacy Agent <apps@jplegacygroup.com>',
-    to:      RECIPIENTS,
-    subject,
-    html,
-  });
-  if (error) throw new Error(error.message);
-  console.log(`[Marketing] ✅ Email enviado: ${subject}`);
+  sections.push(htmlSection(alertsContent));
+
+  let cad = htmlSectionTitle('📊 Cadencia Mensual');
+  cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
+  for (const row of [{ label: 'Paola', key: 'PAOLA' }, { label: 'Jorge', key: 'JORGE' }, { label: 'JP Legacy', key: 'JP_LEGACY' }]) {
+    const c = data.cadence[row.key];
+    const pct = c.goal > 0 ? c.actual / c.goal : 0;
+    const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
+    cad += `<tr style="border-bottom:1px solid #2A2A2A;"><td style="color:#CCC;">${row.label}</td><td style="text-align:center;color:#888;">${c.goal}/mes</td><td style="text-align:center;color:#FFF;font-weight:bold;">${c.actual}/mes</td><td style="text-align:center;">${status}</td></tr>`;
+  }
+  cad += `</table>`;
+  sections.push(htmlSection(cad));
+
+  let inv = htmlSectionTitle('📦 Inventario del Mes');
+  inv += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
+  inv += `<tr><td>Producidos:</td><td><strong style="color:#FFF;">${data.inventory.producedThisWeek}</strong></td></tr>`;
+  inv += `<tr><td>Publicados:</td><td><strong style="color:#FFF;">${data.inventory.publishedThisWeek}</strong></td></tr>`;
+  const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
+  inv += `<tr><td>${surplus >= 0 ? 'Superávit' : 'Déficit'}:</td><td><strong style="color:${surplus >= 0 ? '#4CAF50' : '#FF4444'};">${surplus >= 0 ? '+' : ''}${surplus}</strong></td></tr>`;
+  inv += `</table>`;
+  sections.push(htmlSection(inv));
+
+  let ai = htmlSectionTitle('🤖 Análisis IA Mensual');
+  ai += `<p style="font-size:14px;color:#CCC;line-height:1.6;margin:0;">${data.aiAnalysis}</p>`;
+  sections.push(htmlSection(ai));
+
+  sections.push(`<tr><td style="padding:16px 24px;background:#0D0D0D;text-align:center;"><p style="margin:0;font-size:11px;color:#555;">JP Legacy Agent · Reporte Mensual · ${range}</p></td></tr>`);
+
+  return htmlWrapper('Reporte Mensual Marketing JP', sections.join('\n'));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EMAIL SENDERS
+// ══════════════════════════════════════════════════════════════════════════════
 
 async function sendDailyMarketingReport() {
-  console.log('[Marketing] Generando reporte DIARIO...');
-  const data    = await buildDailyData();
-  const html    = buildDailyHTML(data);
-  const hasOverdue = data.metrics.nicole.overdueCount + data.metrics.karen.overdueCount > 0;
-  const d       = parseDate(data.today);
-  const dayName = DAYS_ES[d.getUTCDay()];
-  const dateStr = `${dayName} ${d.getUTCDate()} ${MONTHS_ES[d.getUTCMonth()]}`;
-  const subject = `JP Legacy — Reporte Diario · ${dateStr}${hasOverdue ? ' ⚠️' : ''}`;
-  await sendMarketingEmail(subject, html);
-  return { data, html };
+  console.log('[marketingReport] Building daily data...');
+  let data;
+  try {
+    data = await buildDailyData();
+  } catch (err) {
+    console.error('[marketingReport] buildDailyData fatal error:', err);
+    return;
+  }
+
+  const text = buildDailyText(data);
+  const html = buildDailyHTML(data);
+  const subject = `📊 Reporte Diario Marketing JP — ${data.todayFormatted}`;
+
+  try {
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const result = await resend.emails.send({
+      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+      to: RECIPIENTS,
+      subject,
+      text,
+      html,
+    });
+    console.log('[marketingReport] Daily report sent:', result?.data?.id || 'ok');
+  } catch (err) {
+    console.error('[marketingReport] Email send error:', err.message);
+  }
 }
 
 async function sendWeeklyMarketingReport() {
-  console.log('[Marketing] Generando reporte SEMANAL...');
-  const data    = await buildWeeklyData();
-  const html    = buildWeeklyHTML(data);
-  const subject = `JP Legacy — Reporte Semanal · ${shortDate(data.weekRange.start)} al ${shortDate(data.weekRange.end)}`;
-  await sendMarketingEmail(subject, html);
-  return { data, html };
+  console.log('[marketingReport] Building weekly data...');
+  let data;
+  try {
+    data = await buildWeeklyData();
+  } catch (err) {
+    console.error('[marketingReport] buildWeeklyData fatal error:', err);
+    return;
+  }
+
+  const range = data.weekRange ? `${data.weekRange.start} — ${data.weekRange.end}` : data.todayFormatted;
+  const subject = `📊 Reporte Semanal Marketing JP — ${range}`;
+  const html = buildWeeklyHTML(data);
+  const text = buildDailyText(data); // reuse text builder as fallback
+
+  try {
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const result = await resend.emails.send({
+      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+      to: RECIPIENTS,
+      subject,
+      text,
+      html,
+    });
+    console.log('[marketingReport] Weekly report sent:', result?.data?.id || 'ok');
+  } catch (err) {
+    console.error('[marketingReport] Weekly email send error:', err.message);
+  }
 }
 
 async function sendMonthlyMarketingReport() {
-  console.log('[Marketing] Generando reporte MENSUAL...');
-  const data    = await buildMonthlyData();
-  const html    = buildMonthlyHTML(data);
-  const subject = `JP Legacy — Reporte Mensual · ${data.monthRange.label}`;
-  await sendMarketingEmail(subject, html);
-  return { data, html };
+  console.log('[marketingReport] Building monthly data...');
+  let data;
+  try {
+    data = await buildMonthlyData();
+  } catch (err) {
+    console.error('[marketingReport] buildMonthlyData fatal error:', err);
+    return;
+  }
+
+  const range = data.monthRange ? data.monthRange.label : data.todayFormatted;
+  const subject = `📊 Reporte Mensual Marketing JP — ${range}`;
+  const html = buildMonthlyHTML(data);
+  const text = buildDailyText(data);
+
+  try {
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const result = await resend.emails.send({
+      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+      to: RECIPIENTS,
+      subject,
+      text,
+      html,
+    });
+    console.log('[marketingReport] Monthly report sent:', result?.data?.id || 'ok');
+  } catch (err) {
+    console.error('[marketingReport] Monthly email send error:', err.message);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CRON SCHEDULER
+// CRON REGISTRATION
 // ══════════════════════════════════════════════════════════════════════════════
 
 function startMarketingReport() {
-  // Daily Mon-Fri 9:00am ET (14:00 UTC)
+  // Daily Mon-Fri at 9am ET (14:00 UTC)
   cron.schedule('0 14 * * 1-5', async () => {
-    console.log('[Marketing] Cron: reporte DIARIO disparado');
-    try { await sendDailyMarketingReport(); }
-    catch (err) { console.error('[Marketing] Cron daily error:', err.message); }
+    console.log('[marketingReport] Daily cron fired');
+    await sendDailyMarketingReport();
   });
 
-  // Weekly Monday 9:00am ET (14:00 UTC) — reports on PREVIOUS week
+  // Weekly on Monday at 9am ET (14:00 UTC) — same time as daily, but weekly report runs additionally
   cron.schedule('0 14 * * 1', async () => {
-    console.log('[Marketing] Cron: reporte SEMANAL disparado');
-    try { await sendWeeklyMarketingReport(); }
-    catch (err) { console.error('[Marketing] Cron weekly error:', err.message); }
+    console.log('[marketingReport] Weekly cron fired');
+    await sendWeeklyMarketingReport();
   });
 
-  // Monthly 1st of month 9:00am ET (14:00 UTC) — reports on PREVIOUS month
+  // Monthly on 1st at 9am ET (14:00 UTC)
   cron.schedule('0 14 1 * *', async () => {
-    console.log('[Marketing] Cron: reporte MENSUAL disparado');
-    try { await sendMonthlyMarketingReport(); }
-    catch (err) { console.error('[Marketing] Cron monthly error:', err.message); }
+    console.log('[marketingReport] Monthly cron fired');
+    await sendMonthlyMarketingReport();
   });
 
-  console.log('[Cron] ✅ Marketing Daily:   0 14 * * 1-5  → 9:00am ET lun-vie');
-  console.log('[Cron] ✅ Marketing Weekly:  0 14 * * 1    → 9:00am ET lunes (semana anterior)');
-  console.log('[Cron] ✅ Marketing Monthly: 0 14 1 * *    → 9:00am ET día 1 (mes anterior)');
+  console.log('[marketingReport] Cron jobs registered: daily (Mon-Fri 9am ET), weekly (Mon 9am ET), monthly (1st 9am ET)');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
