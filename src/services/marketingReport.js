@@ -310,6 +310,7 @@ function getCF(task, fieldName) {
 
 /** Enrich a pipeline task with derived fields */
 function enrichPipelineTask(task) {
+  console.log('[DEBUG] notes for task:', task.name?.substring(0, 40), '| notes:', task.notes?.substring(0, 150));
   const stage = getTaskStage(task);
   const accounts = getTaskAccounts(task);
   const links = extractLinks(task.notes);
@@ -533,31 +534,40 @@ function calcTeamMemberMetrics(memberName, tasks, weekStart, weekEnd, today, vid
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function generateAIAnalysis(data) {
-  try {
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const context = [
-      `Pipeline: ${data.pipeline.activeTotal} videos activos.`,
-      `Alerts: ${data.alerts.critical.length} críticas, ${data.alerts.attention.length} atención.`,
-      `Estancados: ${data.stagnated.length}.`,
-      `Nicole: ${data.team.nicole.completedWeek} completadas semana.`,
-      `Karen: ${data.team.karen.completedWeek} completadas semana.`,
-      `Cadencia Paola: ${data.cadence.PAOLA.actual}/${data.cadence.PAOLA.goal},`,
-      `Jorge: ${data.cadence.JORGE.actual}/${data.cadence.JORGE.goal},`,
-      `JP Legacy: ${data.cadence.JP_LEGACY.actual}/${data.cadence.JP_LEGACY.goal}.`,
-    ].join(' ');
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const context = [
+    `Pipeline: ${data.pipeline.activeTotal} videos activos.`,
+    `Alerts: ${data.alerts.critical.length} críticas, ${data.alerts.attention.length} atención.`,
+    `Estancados: ${data.stagnated.length}.`,
+    `Nicole: ${data.team.nicole.completedWeek} completadas semana.`,
+    `Karen: ${data.team.karen.completedWeek} completadas semana.`,
+    `Cadencia Paola: ${data.cadence['Paola'].actual}/${data.cadence['Paola'].goal},`,
+    `Jorge: ${data.cadence['Jorge'].actual}/${data.cadence['Jorge'].goal},`,
+    `JP Legacy: ${data.cadence['JP Legacy'].actual}/${data.cadence['JP Legacy'].goal}.`,
+  ].join(' ');
 
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 250,
-      messages: [{
-        role: 'user',
-        content: `Analiza estos datos del pipeline de marketing de JP Legacy Group y da observaciones clave, cuellos de botella detectados y 2-3 recomendaciones concretas. Tono ejecutivo en español. Solo el párrafo de análisis, máximo 150 palabras, sin preámbulos.\n\n${context}`,
-      }],
-    });
+  const callHaiku = () => anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 250,
+    messages: [{
+      role: 'user',
+      content: `Analiza estos datos del pipeline de marketing de JP Legacy Group y da observaciones clave, cuellos de botella detectados y 2-3 recomendaciones concretas. Tono ejecutivo en español. Solo el párrafo de análisis, máximo 150 palabras, sin preámbulos.\n\n${context}`,
+    }],
+  });
+
+  try {
+    const msg = await callHaiku();
     return msg.content[0].text;
-  } catch (err) {
-    console.error('[marketingReport] AI analysis error:', err.message);
-    return '[Análisis IA no disponible — error de conexión]';
+  } catch (e) {
+    console.warn('[marketingReport] AI attempt 1 failed:', e.message, '— retrying in 2s');
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const msg = await callHaiku();
+      return msg.content[0].text;
+    } catch (e2) {
+      console.error('[marketingReport] AI attempt 2 failed:', e2.message);
+      return '[Análisis IA no disponible temporalmente]';
+    }
   }
 }
 
@@ -1210,7 +1220,7 @@ function buildDailyText(data) {
       lines.push('  Sin contenido programado');
     } else {
       for (const t of acct.upcomingWeek) {
-        lines.push(`${t.due_on} — ${t.name}`);
+        lines.push(`${t.due_on} — ${shortName(t.name)}`);
         if (t.platforms.length > 0) lines.push(`  📱 ${t.platforms.join(', ')}`);
         lines.push(`  Estado producción: ${estadoIcon(t.estadoProduccion)}`);
         if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
@@ -1464,7 +1474,7 @@ function buildDailyHTML(data) {
       ac += `<p style="font-size:12px;color:#888;margin:12px 0 6px;">📅 PRÓXIMOS 7 DÍAS</p>`;
       for (const t of acct.upcomingWeek) {
         ac += `<div style="background:#222;border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:13px;">`;
-        ac += `<strong style="color:#FFF;">${t.due_on}</strong> — ${t.name}`;
+        ac += `<strong style="color:#FFF;">${t.due_on}</strong> — ${shortName(t.name)}`;
         if (t.platforms.length > 0) ac += `<br><span style="color:#888;">📱 ${t.platforms.join(', ')}</span>`;
         if (t.links.dropbox) ac += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
         else ac += `<br><span style="color:#FF8800;font-size:12px;">⚠️ Sin archivo Dropbox</span>`;
