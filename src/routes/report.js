@@ -1,4 +1,5 @@
 const express = require('express');
+const { Resend } = require('resend');
 const { buildReport, getAllReports } = require('../services/reports');
 const { buildDailyData, buildDailyText, buildDailyHTML } = require('../services/marketingReport');
 const { getQueue, todayKey } = require('../utils/storage');
@@ -40,6 +41,37 @@ router.get('/test-marketing-report', async (req, res) => {
   } catch (err) {
     console.error('[Test] Error generando reporte de marketing:', err);
     res.status(500).type('text/plain').send(`Error: ${err.message}\n\n${err.stack}`);
+  }
+});
+
+// GET /report/send-test-email — sends full HTML+text email via Resend to Jorge
+router.get('/send-test-email', async (req, res) => {
+  try {
+    console.log(`[Test Email] Enviando email de prueba — ${new Date().toISOString()}`);
+    const data = await buildDailyData();
+    const html = buildDailyHTML(data);
+    const text = buildDailyText(data);
+
+    const today = new Date().toLocaleDateString('es-MX', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: 'long', day: 'numeric',
+    });
+    const subject = `🧪 TEST — 📊 Reporte Diario Marketing JP — ${today}`;
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const result = await resend.emails.send({
+      from: 'JP Legacy Agent <apps@jplegacygroup.com>',
+      to: ['jorgeflorez@jplegacygroup.com'],
+      subject,
+      text,
+      html,
+    });
+
+    console.log(`[Test Email] Enviado OK — id: ${result?.data?.id}`);
+    res.json({ sent: true, to: 'jorgeflorez@jplegacygroup.com', id: result?.data?.id });
+  } catch (err) {
+    console.error('[Test Email] Error:', err);
+    res.status(500).json({ sent: false, error: err.message });
   }
 });
 
