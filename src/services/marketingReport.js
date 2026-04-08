@@ -147,7 +147,7 @@ function addDays(isoDate, n) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function asanaHeaders() {
-  return { Authorization: `Bearer ${process.env.ASANA_ACCESS_TOKEN}` };
+  return { Authorization: `Bearer ${process.env.ASANA_TOKEN}` };
 }
 
 async function delay(ms) {
@@ -182,6 +182,10 @@ async function fetchPipelineTasks() {
     offset = res.data.next_page ? res.data.next_page.offset : null;
   } while (offset);
 
+  const firstStage = tasks[0] && tasks[0].memberships && tasks[0].memberships[0]
+    ? tasks[0].memberships[0].section && tasks[0].memberships[0].section.name
+    : 'NO_MEMBERSHIPS';
+  console.log(`[marketingReport] Pipeline: ${tasks.length} tareas. Primera sección: ${JSON.stringify(firstStage)}`);
   return tasks;
 }
 
@@ -195,6 +199,7 @@ async function fetchTeamOverviewTasks(weekStart) {
   ].join(',');
 
   const completedSince = `${weekStart}T00:00:00.000Z`;
+  console.log(`[marketingReport] Team Overview: project=${TEAM_OVERVIEW_PROJECT_ID} completed_since=${completedSince}`);
 
   do {
     const params = {
@@ -214,6 +219,7 @@ async function fetchTeamOverviewTasks(weekStart) {
     offset = res.data.next_page ? res.data.next_page.offset : null;
   } while (offset);
 
+  console.log(`[marketingReport] Team Overview: ${tasks.length} tareas recibidas`);
   return tasks;
 }
 
@@ -469,6 +475,8 @@ async function buildDailyData() {
   const { start: weekStart, end: weekEnd } = currentWeekRangeET();
   const next7End = addDays(today, 7);
 
+  console.log(`[marketingReport] buildDailyData: today=${today} weekStart=${weekStart} weekEnd=${weekEnd}`);
+
   // ── Fetch pipeline tasks ──────────────────────────────────────────────────
   let rawPipeline = [];
   try {
@@ -486,6 +494,7 @@ async function buildDailyData() {
   } catch (err) {
     console.error('[marketingReport] Team overview fetch error:', err.message);
   }
+  console.log(`[marketingReport] rawPipeline=${rawPipeline.length} rawTeam=${rawTeam.length}`);
 
   // ── Enrich pipeline tasks ─────────────────────────────────────────────────
   const tasks = rawPipeline.map(enrichPipelineTask);
