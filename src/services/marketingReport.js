@@ -236,13 +236,25 @@ function getTaskStage(task) {
   return membership ? membership.section.name : 'Unknown';
 }
 
-/** Classify accounts from task tags */
+/** Classify accounts from task name (tags are empty in this project).
+ *  Expected patterns in name:  "… – Paola, Jorge & JP – 2026"
+ *                               "… – Paola & JP – 2026"
+ *                               "… – Jorge – 2026"  etc.
+ */
 function getTaskAccounts(task) {
-  const tagNames = (task.tags || []).map(t => (t.name || '').toLowerCase());
+  const name = (task.name || '').toLowerCase();
   const accounts = [];
-  if (tagNames.some(t => t.includes('paola'))) accounts.push('PAOLA');
-  if (tagNames.some(t => t.includes('jorge'))) accounts.push('JORGE');
-  if (tagNames.some(t => t.includes('jp legacy') || t.includes('jplegacy'))) accounts.push('JP_LEGACY');
+
+  const hasPaola = name.includes('paola');
+  // "jorge" appears standalone; avoid false match on "jp legacy" which doesn't contain it
+  const hasJorge = name.includes('jorge');
+  // "& jp" covers "Paola & JP", "Jorge & JP"; "jp –" covers "– JP – 2026"; "jp legacy" is explicit
+  const hasJP = name.includes('& jp') || /–\s*jp\s*–/.test(name) || name.includes('jp legacy') || name.includes('jplegacy');
+
+  if (hasPaola) accounts.push('PAOLA');
+  if (hasJorge) accounts.push('JORGE');
+  if (hasJP) accounts.push('JP_LEGACY');
+
   return accounts;
 }
 
