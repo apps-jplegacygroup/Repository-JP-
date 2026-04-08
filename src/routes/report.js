@@ -25,8 +25,15 @@ router.get('/queue', (req, res) => {
 
 // GET /test-marketing-report — TEMPORAL: preview del nuevo reporte diario de marketing
 router.get('/test-marketing-report', async (req, res) => {
+  // Prevent HTTP-level caching (Railway CDN, browser, proxies)
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Surrogate-Control': 'no-store',
+  });
   try {
-    console.log('[Test] Generando preview del reporte diario de marketing...');
+    console.log(`[Test] Generando preview — ${new Date().toISOString()}`);
     const data = await buildDailyData();
     const text = buildDailyText(data);
     res.type('text/plain; charset=utf-8').send(text);
