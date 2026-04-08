@@ -153,6 +153,32 @@ router.get('/debug-youtube', async (req, res) => {
   }
 });
 
+// GET /admin/debug-yt-timeline?brand=paola&date=YYYY-MM-DD&metric=videoViews — raw YouTube timelines
+router.get('/debug-yt-timeline', async (req, res) => {
+  const axios = require('axios');
+  const token  = process.env.METRICOOL_API_TOKEN;
+  const userId = process.env.METRICOOL_USER_ID;
+  const brand  = req.query.brand || 'paola';
+  const metric = req.query.metric || 'videoViews';
+  const envMap = { paola: 'METRICOOL_BLOG_ID_PAOLA', jorge: 'METRICOOL_BLOG_ID_JORGE', jp_legacy: 'METRICOOL_BLOG_ID_JP_LEGACY' };
+  const blogId = process.env[envMap[brand]];
+  if (!blogId) return res.status(400).json({ error: `No blogId for "${brand}"` });
+
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const yest = new Date(now); yest.setDate(now.getDate() - 1);
+  const date = req.query.date || yest.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+  try {
+    const http = axios.create({ baseURL: 'https://app.metricool.com/api', headers: { 'X-Mc-Auth': token }, timeout: 20000 });
+    const { data } = await http.get('/v2/analytics/timelines', {
+      params: { userId, blogId, from: `${date}T00:00:00`, to: `${date}T23:59:59`, metric, network: 'youtube' },
+    });
+    return res.json({ brand, blogId, date, metric, raw: data });
+  } catch (e) {
+    return res.status(500).json({ error: e.response?.data || e.message });
+  }
+});
+
 // GET /admin/debug-fub?date=YYYY-MM-DD — diagnose FUB lead fetch for a specific date
 router.get('/debug-fub', async (req, res) => {
   const date = req.query.date || yesterdayKeyET();
