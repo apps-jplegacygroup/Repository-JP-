@@ -5,7 +5,7 @@ const {
   sendWeeklyMarketingReport,
   sendMonthlyMarketingReport,
 } = require('../services/marketingReport');
-const { sendSocialReport, sendDailySocialReport, sendMonthlySocialReport } = require('../services/socialReport');
+const { sendSocialReport, sendDailySocialReport, sendMonthlySocialReport, previewDailySocialReport } = require('../services/socialReport');
 const { debugFUBLeads } = require('../services/fubReport');
 const { yesterdayKeyET } = require('../utils/storage');
 
@@ -112,6 +112,19 @@ router.post('/send-report', async (req, res) => {
     return res.status(400).json({ error: 'type must be daily|weekly|monthly|marketing-daily|marketing-weekly|marketing-monthly|social|social-daily|social-monthly' });
   } catch (err) {
     console.error(`[Admin] Error sending ${type} report:`, err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/preview-daily-social — build daily social HTML without sending email
+router.get('/preview-daily-social', async (req, res) => {
+  try {
+    const { html, subject } = await previewDailySocialReport();
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('X-Subject', subject);
+    return res.send(html);
+  } catch (err) {
+    console.error('[Admin] preview-daily-social error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });

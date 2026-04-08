@@ -933,15 +933,25 @@ function bestDayHour(posts) {
 
 // Fetch one day's IG + FB + YT data for a brand, returning aggregated metrics
 async function fetchOneDayBrand(http, userId, b, date, prevDate) {
+  // Compute 7-day reference window for engagement fallback (when 0 posts today)
+  const [yy, mm, dd] = date.split('-').map(Number);
+  const d7obj = new Date(Date.UTC(yy, mm-1, dd));
+  d7obj.setUTCDate(d7obj.getUTCDate() - 6);
+  const weekAgo = `${d7obj.getUTCFullYear()}-${String(d7obj.getUTCMonth()+1).padStart(2,'0')}-${String(d7obj.getUTCDate()).padStart(2,'0')}`;
+
   const daily = b.platforms.filter(p => ['instagram','facebook','youtube'].includes(p));
   const data  = {}, prev = {};
   const jobs  = [];
 
-  const agIg = (all, reachFallback) => ({
+  // engRef7d: avg engagement of last 7 days (used as reference when today has 0 posts)
+  const avgEngOf = (arr) => arr.length ? arr.reduce((s,p)=>s+(p.engagement||0),0)/arr.length : null;
+
+  const agIg = (all, reachFallback, ref7 = []) => ({
     platform:       'instagram',
     postsCount:     all.length,
     totalReach:     all.reduce((s,p)=>s+(p.reach||0),0) || reachFallback,
-    avgEng:         all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+    avgEng:         all.length ? avgEngOf(all) : null,
+    engRef7d:       all.length === 0 ? avgEngOf(ref7) : null,
     totalLikes:     all.reduce((s,p)=>s+(p.likes||0),0),
     totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
     totalSaved:     all.reduce((s,p)=>s+(p.saved||0),0),
@@ -949,50 +959,57 @@ async function fetchOneDayBrand(http, userId, b, date, prevDate) {
     totalInteractions: all.reduce((s,p)=>s+(p.interactions||0),0),
   });
 
-  const agFb = (all) => ({
+  const agFb = (all, ref7 = []) => ({
     platform:       'facebook',
     postsCount:     all.length,
     totalReach:     all.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
-    avgEng:         all.length ? all.reduce((s,p)=>s+(p.engagement||0),0)/all.length : null,
+    avgEng:         all.length ? avgEngOf(all) : null,
+    engRef7d:       all.length === 0 ? avgEngOf(ref7) : null,
     totalLikes:     all.reduce((s,p)=>s+(p.reactions||p.like||0),0),
     totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
     totalShares:    all.reduce((s,p)=>s+(p.shares||0),0),
   });
 
+  // PROBLEMA 2 FIX: YouTube field names vary — try all known variants
   const agYt = (all) => ({
     platform:       'youtube',
     postsCount:     all.length,
-    totalViews:     all.reduce((s,p)=>s+(p.views||0),0),
-    watchHours:     Math.round(all.reduce((s,p)=>s+(p.watchMinutes||0),0)/60),
-    totalLikes:     all.reduce((s,p)=>s+(p.likes||0),0),
-    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
+    totalViews:     all.reduce((s,p)=>s+(p.views||p.videoViews||p.viewCount||0),0),
+    watchHours:     Math.round(all.reduce((s,p)=>s+(p.watchMinutes||p.watchTime||p.minutesWatched||0),0)/60),
+    totalLikes:     all.reduce((s,p)=>s+(p.likes||p.likeCount||0),0),
+    totalComments:  all.reduce((s,p)=>s+(p.comments||p.commentCount||0),0),
   });
 
   if (daily.includes('instagram')) {
     jobs.push(Promise.all([
-      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
-      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date), end: toV1(date) }),
+      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
+      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
       safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date), metric: 'reach', network: 'instagram', subject: 'account' }),
-      // prev day posts/reels for comparison
       safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
       safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
       safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'reach', network: 'instagram', subject: 'account' }),
-    ]).then(([posts, reels, reachRaw, pp, pr, preachRaw]) => {
+      // 7-day reference for engagement when no posts today
+      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
+      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
+    ]).then(([posts, reels, reachRaw, pp, pr, preachRaw, ref7p, ref7r]) => {
       const all  = [...extractPosts(posts), ...extractPosts(reels)];
-      const pall = [...extractPosts(pp), ...extractPosts(pr)];
+      const pall = [...extractPosts(pp),    ...extractPosts(pr)];
+      const ref7 = [...extractPosts(ref7p), ...extractPosts(ref7r)];
       const ar   = (reachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
       const par  = (preachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
-      data.instagram = agIg(all, ar);
+      data.instagram = agIg(all, ar, ref7);
       prev.instagram = agIg(pall, par);
     }));
   }
 
   if (daily.includes('facebook')) {
     jobs.push(Promise.all([
-      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(date),     end: toV1(date)     }),
+      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
       safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
-    ]).then(([raw, praw]) => {
-      data.facebook = agFb(extractPosts(raw));
+      // 7-day reference for engagement when no posts today
+      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
+    ]).then(([raw, praw, ref7raw]) => {
+      data.facebook = agFb(extractPosts(raw),  extractPosts(ref7raw));
       prev.facebook = agFb(extractPosts(praw));
     }));
   }
@@ -1168,12 +1185,17 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
         ${mCell('VIDEOS',     pf.postsCount||0,         dd(pf.postsCount,  prevpf?.postsCount))}
       </tr>`;
     } else {
+      // PROBLEMA 3 FIX: use 7-day avg engagement as fallback when no posts today
+      const hasEngToday = pf.avgEng != null;
+      const engLabel = hasEngToday ? 'ENGAGEMENT' : (pf.engRef7d != null ? 'ENG PROM 7D' : 'ENGAGEMENT');
+      const engVal   = hasEngToday ? fmtPct(pf.avgEng) : (pf.engRef7d != null ? fmtPct(pf.engRef7d) : '—');
+      const engDelta = hasEngToday ? dd(pf.avgEng, prevpf?.avgEng) : '';
       const thirdCell = isIG && pf.newFollowers != null
         ? mCell('NUEVOS SEG', fmtNP(pf.newFollowers), dd(pf.newFollowers, prevpf?.newFollowers), pf.newFollowers >= 0 ? '#4CAF50' : '#FF4444')
         : mCell('POSTS', pf.postsCount||0, dd(pf.postsCount, prevpf?.postsCount));
       statsRow = `<tr>
         ${mCell('ALCANCE', fmtN(pf.totalReach||0), dd(pf.totalReach, prevpf?.totalReach))}
-        ${mCell('ENGAGEMENT', pf.avgEng != null ? fmtPct(pf.avgEng) : '—', dd(pf.avgEng, prevpf?.avgEng))}
+        ${mCell(engLabel, engVal, engDelta)}
         ${thirdCell}
       </tr>`;
     }
@@ -1224,8 +1246,20 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
   function dayBrandRow(brand, result) {
     const d    = result?.data || {};
     const prev = result?.prev || {};
+    const err  = result?.error;
     const plats = ['instagram','facebook','youtube'].filter(p => brand.platforms.includes(p));
     const platformBlocks = plats.map(pfKey => dayPlatformBlock(pfKey, d[pfKey], prev[pfKey])).join('');
+
+    // PROBLEMA 1 FIX: always show content even when data is missing
+    const errBanner = err
+      ? `<tr><td style="padding:8px 12px;color:#FF4444;font-size:10px;font-family:Arial;">
+          ⚠️ ${err} — Configura ${brand.envKey} en Railway
+        </td></tr>`
+      : '';
+    const innerContent = platformBlocks ||
+      `<tr><td style="padding:10px 12px;color:#444;font-size:11px;font-family:Arial;font-style:italic;">
+        Sin actividad en todos los canales
+      </td></tr>`;
 
     return `
     <tr><td style="padding:0 0 10px;">
@@ -1239,8 +1273,9 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
           ${brand.icon} ${brand.name}
         </span>
       </td></tr>
+      ${errBanner}
       <tr><td style="padding:10px 12px;">
-      <table width="100%" cellpadding="0" cellspacing="0">${platformBlocks}</table>
+      <table width="100%" cellpadding="0" cellspacing="0">${innerContent}</table>
       </td></tr>
     </table>
     </td></tr>`;
@@ -1678,9 +1713,21 @@ function startSocialReport() {
 // EXPORTS
 // ══════════════════════════════════════════════════════════
 
+// Preview-only: builds the daily social HTML without sending email
+async function previewDailySocialReport() {
+  const data    = await buildDailySocialData();
+  const aiText  = await generateDailyAI(data.results, data.date);
+  const html    = buildDailySocialHTML({ ...data, aiText });
+  const [y, m, d] = data.date.split('-').map(Number);
+  const dt      = new Date(Date.UTC(y, m-1, d));
+  const subject = `[PREVIEW] JP Legacy — Reporte Diario de Redes · ${DAYS_ES[dt.getUTCDay()]} ${d} ${MONTHS_ES[m-1].slice(0,3)}`;
+  return { html, subject, data };
+}
+
 module.exports = {
   startSocialReport,
   sendSocialReport,        buildSocialData,
   sendDailySocialReport,   buildDailySocialData,
   sendMonthlySocialReport, buildMonthlySocialData,
+  previewDailySocialReport,
 };
