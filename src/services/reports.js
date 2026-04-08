@@ -1220,33 +1220,33 @@ function startDailyReport() {
     printDailyReport();
   });
 
-  // Every day at 8am EDT (12:00 UTC) — send daily report for YESTERDAY
-  cron.schedule('0 12 * * *', () => {
+  // Every weekday at 9am EDT (13:00 UTC) — send daily report for YESTERDAY
+  cron.schedule('0 13 * * 1-5', () => {
     const date = yesterdayKeyET();
-    console.log(`[Cron 8am] Iniciando reporte diario de ayer... fecha=${date} utc=${new Date().toISOString()}`);
+    console.log(`[Cron 9am] Iniciando reporte diario de ayer... fecha=${date} utc=${new Date().toISOString()}`);
     sendReportByEmail(date).catch((err) =>
-      console.error(`[Cron 8am] Error enviando reporte diario (${date}):`, err.message)
+      console.error(`[Cron 9am] Error enviando reporte diario (${date}):`, err.message)
     );
   });
 
-  // Every Monday at 8am EDT (12:00 UTC) — send weekly report (covers previous Mon–Sun)
-  cron.schedule('0 12 * * 1', () => {
+  // Every Monday at 9am EDT (13:00 UTC) — send weekly report (covers previous Mon–Sun)
+  cron.schedule('0 13 * * 1', () => {
     console.log(`[Cron semanal] Iniciando reporte semanal... utc=${new Date().toISOString()}`);
     sendWeeklyReport().catch((err) =>
       console.error('[Cron semanal] Error:', err.message)
     );
   });
 
-  // Every 1st of the month at 8am EDT (12:00 UTC) — send monthly report (covers previous month)
-  cron.schedule('0 12 1 * *', () => {
+  // Every 1st of the month at 9am EDT (13:00 UTC) — send monthly report (covers previous month)
+  cron.schedule('0 13 1 * *', () => {
     console.log(`[Cron mensual] Iniciando reporte mensual... utc=${new Date().toISOString()}`);
     sendMonthlyReport().catch((err) =>
       console.error('[Cron mensual] Error:', err.message)
     );
   });
 
-  // Every day at 7:55am EDT (11:55 UTC) — auto-correct dirty sources from Zapier before the report
-  cron.schedule('55 11 * * *', async () => {
+  // Every weekday at 8:55am EDT (12:55 UTC) — auto-correct dirty sources from Zapier before the report
+  cron.schedule('55 12 * * 1-5', async () => {
     const date = yesterdayKeyET();
     console.log(`[SourceFix] Iniciando autocorrección de sources para ${date}...`);
     try {
@@ -1264,8 +1264,8 @@ function startDailyReport() {
     }
   });
 
-  // Every day at 8:05am EDT (12:05 UTC) — audit: verify daily report was sent, retry if not
-  cron.schedule('5 12 * * *', async () => {
+  // Every weekday at 9:05am EDT (13:05 UTC) — audit: verify daily report was sent, retry if not
+  cron.schedule('5 13 * * 1-5', async () => {
     const date = yesterdayKeyET();
     console.log(`[Cron auditoría] Verificando reporte de ${date}... utc=${new Date().toISOString()}`);
     const todayLog = getEmailLogForDate(date);
