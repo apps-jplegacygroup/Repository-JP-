@@ -159,7 +159,7 @@ async function fetchPipelineTasks() {
   const tasks = [];
   let offset = null;
   const optFields = [
-    'name', 'assignee', 'assignee.name', 'tags', 'tags.name',
+    'name', 'assignee.name', 'tags.name',
     'due_on', 'created_at', 'modified_at', 'completed', 'completed_at',
     'custom_fields.name', 'custom_fields.display_value',
     'notes', 'memberships.section.name',
@@ -577,8 +577,8 @@ function buildAlerts(pipeline, accounts, today, weekStart, weekEnd, allTasks, vi
       .sort().reverse()[0] || null;
     const daysSince = lastPub
       ? Math.floor((parseDate(today) - parseDate(lastPub)) / 86400000)
-      : 999;
-    if (daysSince > 4) {
+      : null;
+    if (daysSince !== null && daysSince > 4) {
       critical.push(`Cuenta ${acctData.name}: ${daysSince} días sin publicar`);
     }
   }
@@ -591,9 +591,12 @@ function buildAlerts(pipeline, accounts, today, weekStart, weekEnd, allTasks, vi
     }
   }
 
-  // 🔴 Ready to upload with no FIN/ completed in Team Overview
+  // 🔴 Ready to upload with no FIN/ completed in Team Overview — only alert if due today or tomorrow
   const readyToUploadTasks = stages['Ready to upload'] || [];
   for (const t of readyToUploadTasks) {
+    if (!t.due_on) continue;
+    const daysUntilDue = Math.round((parseDate(t.due_on) - parseDate(today)) / 86400000);
+    if (daysUntilDue > 1) continue;
     const finMatch = (videoTasks || []).find(vt =>
       vt.prefix === 'FIN' && vt.pipelineMatch === t.gid && vt.completed
     );
@@ -681,6 +684,9 @@ async function buildDailyData() {
     console.log('[DEBUG] rawPipeline[0].name:', t0.name?.slice(0, 60));
     console.log('[DEBUG] rawPipeline[0].memberships:', JSON.stringify(t0.memberships?.slice(0, 1)));
     console.log('[DEBUG] rawPipeline[0] section via getTaskStage:', getTaskStage(t0));
+    console.log('[DEBUG] task.tags sample:', JSON.stringify(rawPipeline[0]?.tags));
+    const tagSample = rawPipeline.flatMap(t => (t.tags || []).map(tg => tg.name)).filter(Boolean);
+    console.log('[DEBUG] all tag names across pipeline:', JSON.stringify([...new Set(tagSample)].slice(0, 20)));
   } else {
     console.log('[DEBUG] rawPipeline is EMPTY — no pipeline tasks fetched');
   }
@@ -751,7 +757,7 @@ async function buildDailyData() {
     const lastPublish = completedDates[0] || null;
     const daysSincePublish = lastPublish
       ? Math.floor((parseDate(today) - parseDate(lastPublish)) / (1000 * 60 * 60 * 24))
-      : 999;
+      : null;
 
     // Upcoming week tasks
     const upcomingWeek = acctTasks.filter(t =>
@@ -938,7 +944,7 @@ async function buildWeeklyData() {
       isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
     ).length;
     const publishedToday = 0;
-    const daysSincePublish = 0;
+    const daysSincePublish = null;
     const upcomingWeek = [];
     const contentBalance = {};
     for (const t of acctTasks) {
@@ -1057,7 +1063,7 @@ async function buildMonthlyData() {
     for (const t of acctTasks) {
       for (const p of t.platforms) contentBalance[p] = (contentBalance[p] || 0) + 1;
     }
-    accounts[key] = { name: def.name, tasks: acctTasks, publishedToday: 0, publishedThisWeek, daysSincePublish: 0, upcomingWeek: [], contentBalance };
+    accounts[key] = { name: def.name, tasks: acctTasks, publishedToday: 0, publishedThisWeek, daysSincePublish: null, upcomingWeek: [], contentBalance };
   }
 
   const stagnated = tasks.filter(t => t.stagnated && !t.completed);
@@ -1163,7 +1169,7 @@ function buildDailyText(data) {
     if (!acct) { lines.push('[Sección no disponible — error de conexión]'); lines.push(''); continue; }
 
     const goal = CADENCE_GOALS[key];
-    const daysSinceStr = acct.daysSincePublish >= 999 ? 'N/A' : String(acct.daysSincePublish);
+    const daysSinceStr = acct.daysSincePublish !== null ? String(acct.daysSincePublish) : 'N/A';
     lines.push(`Publicados hoy: ${acct.publishedToday} | Esta semana: ${acct.publishedThisWeek}/${goal}`);
     lines.push(`Días sin publicar: ${daysSinceStr}`);
 
@@ -1432,7 +1438,7 @@ function buildDailyHTML(data) {
     ac += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
     ac += `<tr><td>Publicados hoy:</td><td><strong style="color:#FFF;">${acct.publishedToday}</strong></td>`;
     ac += `<td>Esta semana:</td><td><strong style="color:#FFF;">${acct.publishedThisWeek}/${goal}</strong></td></tr>`;
-    ac += `<tr><td>Días sin publicar:</td><td colspan="3"><strong style="color:${acct.daysSincePublish > 4 ? '#FF4444' : '#FFF'};">${acct.daysSincePublish}</strong></td></tr>`;
+    ac += `<tr><td>Días sin publicar:</td><td colspan="3"><strong style="color:${acct.daysSincePublish !== null && acct.daysSincePublish > 4 ? '#FF4444' : '#FFF'};">${acct.daysSincePublish !== null ? acct.daysSincePublish : 'N/A'}</strong></td></tr>`;
     ac += `</table>`;
 
     if (acct.upcomingWeek.length > 0) {
