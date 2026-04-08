@@ -202,16 +202,20 @@ router.get('/debug-metricool', async (req, res) => {
   };
 
   // Timeline metrics to probe — one call per metric
-  const tlMetrics = ['impressions','reach','profileVisits','websiteClicks','followersCount',
-    'followers','engagement','likes','comments','saved','shares','reachStories','impressionsStories',
-    'views','estimatedMinutesWatched','subscribersGained','totalSubscribers'];
-  const tlIG = {}, tlIGpost = {}, tlYT = {};
-  await Promise.all(tlMetrics.map(async m => {
-    // Instagram requires subject param — try both 'account' and 'post'
-    tlIG[m]     = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram', subject: 'account' });
-    tlIGpost[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram', subject: 'post' });
-    tlYT[m]     = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'youtube' });
-  }));
+  // Instagram subject=account valid metrics (from API error messages)
+  const igMetrics = ['followers','impressions','reach','views',
+    'profile_views','website_clicks','delta_followers','accounts_engaged',
+    'postsCount','postsInteractions','clicks_total',
+    'email_contacts','get_directions_clicks','phone_call_clicks'];
+  // YouTube valid metrics (from API error messages)
+  const ytMetrics = ['views','totalViews','estimatedMinutesWatched','averageViewDuration',
+    'viewerPercentage','subscribersGained','subscribersLost','totalSubscribers',
+    'likes','dislikes','comments','shares','interactions','totalLikes','totalComments'];
+  const tlIG = {}, tlYT = {};
+  await Promise.all([
+    ...igMetrics.map(async m => { tlIG[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'instagram', subject: 'account' }); }),
+    ...ytMetrics.map(async m => { tlYT[m] = await tryGet('/v2/analytics/timelines', { ...base, from, to, metric: m, network: 'youtube' }); }),
+  ]);
 
   const [
     overview,    overviewV1,
@@ -245,7 +249,6 @@ router.get('/debug-metricool', async (req, res) => {
   return res.json({
     brand, blogId, date,
     timelines_instagram_account: tlIG,
-    timelines_instagram_post:    tlIGpost,
     timelines_youtube:           tlYT,
     overview_v2:         overview,
     overview_v1:         overviewV1,
