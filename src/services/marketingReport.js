@@ -1391,6 +1391,81 @@ function buildDailyText(data) {
 // HTML EMAIL BUILDERS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ─── Calendar helpers ─────────────────────────────────────────────────────────
+const ACCT_CAL_COLOR = {
+  Paola:      '#ECB009',
+  Jorge:      '#4FC3F7',
+  'JP Legacy':'#4CAF50',
+};
+
+/** Returns [{iso, num, dayName}] for Mon→Sun of the week containing todayStr */
+function getWeekDays(todayStr) {
+  const [y, m, d] = todayStr.split('-').map(Number);
+  const dow = new Date(y, m - 1, d).getDay(); // 0=Sun
+  const fromMon = dow === 0 ? 6 : dow - 1;
+  const DAY = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  return Array.from({ length: 7 }, (_, i) => {
+    const dt = new Date(y, m - 1, d - fromMon + i);
+    const iso = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    return { iso, num: dt.getDate(), dayName: DAY[i] };
+  });
+}
+
+/**
+ * Build a 7-column Mon→Sun calendar table.
+ * tasksByDay: { 'YYYY-MM-DD': [enriched task objects] }
+ * acctKey: 'Paola'|'Jorge'|'JP Legacy'|null (null = unified/all accounts)
+ */
+function buildMiniCalendar(todayStr, tasksByDay, acctKey) {
+  const days = getWeekDays(todayStr);
+
+  // Header row
+  let html = `<table width="100%" cellpadding="0" cellspacing="3" style="table-layout:fixed;border-collapse:separate;margin-top:10px;">`;
+  html += `<tr>`;
+  for (const day of days) {
+    html += `<th style="text-align:center;font-size:10px;font-weight:700;color:#777;text-transform:uppercase;letter-spacing:1px;padding:0 0 5px 0;width:14%;">${day.dayName}</th>`;
+  }
+  html += `</tr><tr>`;
+
+  for (const day of days) {
+    const isToday  = day.iso === todayStr;
+    const tasks    = tasksByDay[day.iso] || [];
+    const cellBg   = isToday ? '#2a2200' : '#1e1e1e';
+
+    // Determine border accent color
+    let borderColor = '#333';
+    if (tasks.length > 0) {
+      if (acctKey) {
+        borderColor = ACCT_CAL_COLOR[acctKey] || '#555';
+      } else {
+        const allKeys = [...new Set(tasks.flatMap(t => t.accounts || []))];
+        borderColor = allKeys.length > 1 ? '#EEEEEE' : (ACCT_CAL_COLOR[allKeys[0]] || '#555');
+      }
+    }
+
+    html += `<td style="vertical-align:top;background:${cellBg};border-top:3px solid ${borderColor};border-radius:6px;padding:6px 5px;min-height:80px;">`;
+    // Day number
+    html += `<div style="font-size:12px;font-weight:700;color:${isToday ? '#ECB009' : '#888'};margin-bottom:5px;">${day.num}</div>`;
+
+    if (tasks.length === 0) {
+      html += `<div style="color:#444;font-size:10px;text-align:center;padding-top:4px;">—</div>`;
+    } else {
+      for (const t of tasks) {
+        // In unified view, add a colored dot per account
+        let dot = '';
+        if (!acctKey && t.accounts && t.accounts.length > 0) {
+          const dotColor = t.accounts.length > 1 ? '#EEEEEE' : (ACCT_CAL_COLOR[t.accounts[0]] || '#888');
+          dot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};margin-right:3px;vertical-align:middle;"></span>`;
+        }
+        html += `<div style="font-size:10px;color:#EEEEEE;line-height:1.35;margin-bottom:3px;word-break:break-word;">${dot}${shortName(t.name)}</div>`;
+      }
+    }
+    html += `</td>`;
+  }
+  html += `</tr></table>`;
+  return html;
+}
+
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
   bg:        '#222222',
@@ -1493,22 +1568,41 @@ function buildDailyHTML(data) {
     ac += `<tr><td style="padding:6px 8px;color:${C.textMid};">Días sin publicar</td><td colspan="3" style="padding:6px 8px;"><strong style="color:${acct.daysSincePublish !== null && acct.daysSincePublish > 4 ? C.red : C.text};">${acct.daysSincePublish !== null ? acct.daysSincePublish : 'N/A'}</strong></td></tr>`;
     ac += `</table>`;
 
-    if (acct.upcomingWeek.length > 0) {
-      ac += `<p style="font-size:11px;font-weight:700;color:${C.gold};text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;">📅 Próximos 7 días</p>`;
-      for (const t of acct.upcomingWeek) {
-        ac += `<div style="background:${C.bgCard};border-radius:6px;padding:9px 12px;margin-bottom:6px;font-size:13px;border-left:2px solid ${C.border};">`;
-        ac += `<span style="color:${C.gold};font-weight:700;">${t.due_on}</span> <span style="color:${C.text};">— ${shortName(t.name)}</span>`;
-        if (t.platforms.length > 0) ac += `<br><span style="color:${C.textDim};font-size:12px;">📱 ${t.platforms.join(', ')}</span>`;
-        if (t.links.dropbox) ac += `<br><a href="${t.links.dropbox}" style="color:${C.gold};font-size:12px;text-decoration:none;">🔗 Dropbox</a>`;
-        else ac += `<br><span style="color:${C.orange};font-size:12px;">⚠️ Sin archivo Dropbox</span>`;
-        ac += `<br><span style="color:${C.textDim};font-size:11px;">Stage: ${t.stage}</span>`;
-        ac += `</div>`;
-      }
-    } else {
-      ac += `<p style="color:${C.orange};font-size:13px;margin:8px 0 0;">⚠️ Sin contenido programado en próximos 7 días</p>`;
+    // Build tasksByDay map for this account
+    const acctTasksByDay = {};
+    for (const t of acct.upcomingWeek) {
+      if (!acctTasksByDay[t.due_on]) acctTasksByDay[t.due_on] = [];
+      acctTasksByDay[t.due_on].push(t);
+    }
+    ac += `<p style="font-size:11px;font-weight:700;color:${C.gold};text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px;">📅 Semana actual</p>`;
+    ac += buildMiniCalendar(data.today, acctTasksByDay, key);
+    if (acct.upcomingWeek.length === 0) {
+      ac += `<p style="color:${C.orange};font-size:12px;margin:6px 0 0;">⚠️ Sin contenido programado esta semana</p>`;
     }
     sections.push(htmlSection(ac));
   }
+
+  // Unified calendar — all accounts combined
+  const allTasksByDay = {};
+  for (const { key } of accountOrder) {
+    const acct = data.accounts[key];
+    if (!acct) continue;
+    for (const t of acct.upcomingWeek) {
+      if (!allTasksByDay[t.due_on]) allTasksByDay[t.due_on] = [];
+      // avoid duplicates if task belongs to multiple accounts
+      if (!allTasksByDay[t.due_on].find(x => x.gid === t.gid)) {
+        allTasksByDay[t.due_on].push(t);
+      }
+    }
+  }
+  let ucal = htmlSectionTitle('📅 Calendario Unificado — Todas las Cuentas');
+  ucal += `<p style="font-size:11px;color:${C.textDim};margin:0 0 8px;">`;
+  ucal += `<span style="color:${ACCT_CAL_COLOR['Paola']};">● Paola</span> &nbsp;`;
+  ucal += `<span style="color:${ACCT_CAL_COLOR['Jorge']};">● Jorge</span> &nbsp;`;
+  ucal += `<span style="color:${ACCT_CAL_COLOR['JP Legacy']};">● JP Legacy</span> &nbsp;`;
+  ucal += `<span style="color:#EEEEEE;">● Múltiples</span></p>`;
+  ucal += buildMiniCalendar(data.today, allTasksByDay, null);
+  sections.push(htmlSection(ucal));
 
   // Pipeline
   let pc = htmlSectionTitle('🎬 Pipeline General — Por Stage');
