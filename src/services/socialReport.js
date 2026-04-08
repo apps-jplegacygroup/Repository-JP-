@@ -931,9 +931,9 @@ function bestDayHour(posts) {
 // DAILY DATA BUILDER  (Instagram · Facebook · YouTube)
 // ══════════════════════════════════════════════════════════
 
-// Fetch one day's IG + FB + YT data for a brand, returning aggregated metrics
+// Fetch one day's IG + FB + YT data for a brand with full account-level metrics
 async function fetchOneDayBrand(http, userId, b, date, prevDate) {
-  // Compute 7-day reference window for engagement fallback (when 0 posts today)
+  // 7-day reference window for engagement fallback (when 0 posts today)
   const [yy, mm, dd] = date.split('-').map(Number);
   const d7obj = new Date(Date.UTC(yy, mm-1, dd));
   d7obj.setUTCDate(d7obj.getUTCDate() - 6);
@@ -943,100 +943,165 @@ async function fetchOneDayBrand(http, userId, b, date, prevDate) {
   const data  = {}, prev = {};
   const jobs  = [];
 
-  // engRef7d: avg engagement of last 7 days (used as reference when today has 0 posts)
+  const sumTL    = (r) => (r?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
   const avgEngOf = (arr) => arr.length ? arr.reduce((s,p)=>s+(p.engagement||0),0)/arr.length : null;
 
-  const agIg = (all, reachFallback, ref7 = []) => ({
-    platform:       'instagram',
-    postsCount:     all.length,
-    totalReach:     all.reduce((s,p)=>s+(p.reach||0),0) || reachFallback,
-    avgEng:         all.length ? avgEngOf(all) : null,
-    engRef7d:       all.length === 0 ? avgEngOf(ref7) : null,
-    totalLikes:     all.reduce((s,p)=>s+(p.likes||0),0),
-    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
-    totalSaved:     all.reduce((s,p)=>s+(p.saved||0),0),
-    totalShares:    all.reduce((s,p)=>s+(p.shares||0),0),
-    totalInteractions: all.reduce((s,p)=>s+(p.interactions||0),0),
-  });
-
-  const agFb = (all, ref7 = []) => ({
-    platform:       'facebook',
-    postsCount:     all.length,
-    totalReach:     all.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
-    avgEng:         all.length ? avgEngOf(all) : null,
-    engRef7d:       all.length === 0 ? avgEngOf(ref7) : null,
-    totalLikes:     all.reduce((s,p)=>s+(p.reactions||p.like||0),0),
-    totalComments:  all.reduce((s,p)=>s+(p.comments||0),0),
-    totalShares:    all.reduce((s,p)=>s+(p.shares||0),0),
-  });
-
-  // PROBLEMA 2 FIX: YouTube field names vary — try all known variants
-  const agYt = (all) => ({
-    platform:       'youtube',
-    postsCount:     all.length,
-    totalViews:     all.reduce((s,p)=>s+(p.views||p.videoViews||p.viewCount||0),0),
-    watchHours:     Math.round(all.reduce((s,p)=>s+(p.watchMinutes||p.watchTime||p.minutesWatched||0),0)/60),
-    totalLikes:     all.reduce((s,p)=>s+(p.likes||p.likeCount||0),0),
-    totalComments:  all.reduce((s,p)=>s+(p.comments||p.commentCount||0),0),
-  });
-
   if (daily.includes('instagram')) {
+    const ib = { userId, blogId: b.blogId };
+    // Helper: account timeline call with subject=account
+    const tl = (d, m) => safeGet(http, '/v2/analytics/timelines',
+      { ...ib, from: toV2s(d), to: toV2e(d), metric: m, network: 'instagram', subject: 'account' });
+
     jobs.push(Promise.all([
-      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
-      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date), to: toV2e(date), metric: 'reach', network: 'instagram', subject: 'account' }),
-      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
-      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'reach', network: 'instagram', subject: 'account' }),
-      // 7-day reference for engagement when no posts today
-      safeGet(http, '/stats/instagram/posts', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
-      safeGet(http, '/stats/instagram/reels', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
-    ]).then(([posts, reels, reachRaw, pp, pr, preachRaw, ref7p, ref7r]) => {
-      const all  = [...extractPosts(posts), ...extractPosts(reels)];
-      const pall = [...extractPosts(pp),    ...extractPosts(pr)];
-      const ref7 = [...extractPosts(ref7p), ...extractPosts(ref7r)];
-      const ar   = (reachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
-      const par  = (preachRaw?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
-      data.instagram = agIg(all, ar, ref7);
-      prev.instagram = agIg(pall, par);
+      // Today — account-level timelines (confirmed valid metrics)
+      tl(date, 'followers'),          //  0
+      tl(date, 'delta_followers'),    //  1
+      tl(date, 'impressions'),        //  2
+      tl(date, 'reach'),              //  3
+      tl(date, 'accounts_engaged'),   //  4
+      tl(date, 'postsInteractions'),  //  5
+      // Today — per-post detail (reels + posts)
+      safeGet(http, '/stats/instagram/reels',   { ...ib, start: toV1(date), end: toV1(date) }), //  6
+      safeGet(http, '/stats/instagram/posts',   { ...ib, start: toV1(date), end: toV1(date) }), //  7
+      safeGet(http, '/stats/instagram/stories', { ...ib, start: toV1(date), end: toV1(date) }), //  8
+      // Prev day — account timelines
+      tl(prevDate, 'followers'),          //  9
+      tl(prevDate, 'delta_followers'),    // 10
+      tl(prevDate, 'impressions'),        // 11
+      tl(prevDate, 'reach'),              // 12
+      tl(prevDate, 'accounts_engaged'),   // 13
+      tl(prevDate, 'postsInteractions'),  // 14
+      // Prev day — posts/reels
+      safeGet(http, '/stats/instagram/reels', { ...ib, start: toV1(prevDate), end: toV1(prevDate) }), // 15
+      safeGet(http, '/stats/instagram/posts', { ...ib, start: toV1(prevDate), end: toV1(prevDate) }), // 16
+      // 7-day reference for engagement when 0 posts today
+      safeGet(http, '/stats/instagram/reels', { ...ib, start: toV1(weekAgo), end: toV1(date) }), // 17
+      safeGet(http, '/stats/instagram/posts', { ...ib, start: toV1(weekAgo), end: toV1(date) }), // 18
+    ]).then(([
+      tlFoll, tlDelta, tlImpr, tlReach, tlEngaged, tlInter,
+      reelsR, postsR, storiesR,
+      ptlFoll, ptlDelta, ptlImpr, ptlReach, ptlEngaged, ptlInter,
+      preelsR, ppostsR,
+      ref7reels, ref7posts,
+    ]) => {
+      const reels  = extractPosts(reelsR);
+      const posts  = extractPosts(postsR);
+      const all    = [...reels, ...posts];
+      const preels = extractPosts(preelsR);
+      const pposts = extractPosts(ppostsR);
+      const pall   = [...preels, ...pposts];
+      const ref7   = [...extractPosts(ref7reels), ...extractPosts(ref7posts)];
+
+      // Aggregate stories for the day
+      const storiesList = Array.isArray(storiesR) ? storiesR : (storiesR?.data || []);
+      const stories = storiesList.length ? {
+        count:       storiesList.length,
+        impressions: storiesList.reduce((s,x)=>s+(x.impressions||x.impressionsTotal||0),0),
+        reach:       storiesList.reduce((s,x)=>s+(x.reach||0),0),
+        exits:       storiesList.reduce((s,x)=>s+(x.exits||0),0),
+        tapsForward: storiesList.reduce((s,x)=>s+(x.tapsForward||0),0),
+        tapsBack:    storiesList.reduce((s,x)=>s+(x.tapsBack||0),0),
+        replies:     storiesList.reduce((s,x)=>s+(x.replies||0),0),
+      } : null;
+
+      // Top 3 reels by plays (views field confirmed from diagnostics)
+      const topReels = [...reels]
+        .sort((a,b2)=>(b2.views||0)-(a.views||0))
+        .slice(0, 3);
+
+      const buildIG = (postsArr, reelsArr, tF,tD,tI,tR,tE,tN, ref7data) => ({
+        platform:          'instagram',
+        postsCount:        postsArr.length,
+        followers:         sumTL(tF) || null,
+        newFollowers:      sumTL(tD) || null,
+        impressions:       sumTL(tI) || null,
+        totalReach:        sumTL(tR) || null,
+        accountsEngaged:   sumTL(tE) || null,
+        postsInteractions: sumTL(tN) || null,
+        totalLikes:    postsArr.reduce((s,p)=>s+(p.likes||0),0),
+        totalComments: postsArr.reduce((s,p)=>s+(p.comments||0),0),
+        totalSaved:    postsArr.reduce((s,p)=>s+(p.saved||0),0),
+        totalShares:   postsArr.reduce((s,p)=>s+(p.shares||0),0),
+        avgEng:    reelsArr.length ? avgEngOf(reelsArr) : (postsArr.length ? avgEngOf(postsArr) : null),
+        engRef7d:  postsArr.length === 0 ? avgEngOf(ref7data||[]) : null,
+      });
+
+      data.instagram = {
+        ...buildIG(all,  reels,  tlFoll,  tlDelta,  tlImpr,  tlReach,  tlEngaged,  tlInter,  ref7),
+        stories: stories,
+        topReels: topReels,
+      };
+      prev.instagram = buildIG(pall, preels, ptlFoll, ptlDelta, ptlImpr, ptlReach, ptlEngaged, ptlInter, []);
     }));
   }
 
   if (daily.includes('facebook')) {
+    const fb = { userId, blogId: b.blogId };
     jobs.push(Promise.all([
-      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(date),    end: toV1(date)    }),
-      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(prevDate), end: toV1(prevDate) }),
-      // 7-day reference for engagement when no posts today
-      safeGet(http, '/stats/facebook/posts', { userId, blogId: b.blogId, start: toV1(weekAgo), end: toV1(date) }),
+      safeGet(http, '/stats/facebook/posts', { ...fb, start: toV1(date),     end: toV1(date)     }),
+      safeGet(http, '/stats/facebook/posts', { ...fb, start: toV1(prevDate), end: toV1(prevDate) }),
+      safeGet(http, '/stats/facebook/posts', { ...fb, start: toV1(weekAgo),  end: toV1(date)     }),
     ]).then(([raw, praw, ref7raw]) => {
+      const agFb = (arr, ref7=[]) => ({
+        platform:       'facebook',
+        postsCount:     arr.length,
+        totalReach:     arr.reduce((s,p)=>s+(p.impressionsUnique||p.reach||0),0),
+        avgEng:         arr.length ? avgEngOf(arr) : null,
+        engRef7d:       arr.length === 0 ? avgEngOf(ref7) : null,
+        totalLikes:     arr.reduce((s,p)=>s+(p.reactions||p.like||0),0),
+        totalComments:  arr.reduce((s,p)=>s+(p.comments||0),0),
+        totalShares:    arr.reduce((s,p)=>s+(p.shares||0),0),
+      });
       data.facebook = agFb(extractPosts(raw),  extractPosts(ref7raw));
       prev.facebook = agFb(extractPosts(praw));
     }));
   }
 
   if (daily.includes('youtube')) {
-    // Metricool YouTube timelines: 'views' = channel daily views, 'estimatedMinutesWatched' = daily watch time
-    // Per-post analytics aren't available same day (Shorts especially), so timelines are the reliable source
+    const yb  = { userId, blogId: b.blogId };
+    const ytl = (d, m) => safeGet(http, '/v2/analytics/timelines',
+      { ...yb, from: toV2s(d), to: toV2e(d), metric: m, network: 'youtube' });
+
     jobs.push(Promise.all([
-      safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     postsType: 'publishedInRange' }),
-      safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), postsType: 'publishedInRange' }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     metric: 'views',                    network: 'youtube' }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'views',                    network: 'youtube' }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     metric: 'estimatedMinutesWatched',  network: 'youtube' }),
-      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'estimatedMinutesWatched',  network: 'youtube' }),
-    ]).then(([raw, praw, viewsRaw, pViewsRaw, watchRaw, pWatchRaw]) => {
-      const sumVals = (r) => (r?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
-      const chViews  = sumVals(viewsRaw),  pchViews = sumVals(pViewsRaw);
-      const chWatch  = sumVals(watchRaw),  pchWatch = sumVals(pWatchRaw);
-      const ytMerge = (posts, chV, chW) => {
-        const base = agYt(posts);
-        return { ...base,
-          totalViews: base.totalViews || Math.round(chV),
-          watchHours: base.watchHours || Math.round(chW / 60),
-        };
-      };
-      data.youtube = ytMerge(extractPosts(raw),  chViews,  chWatch);
-      prev.youtube = ytMerge(extractPosts(praw), pchViews, pchWatch);
+      safeGet(http, '/v2/analytics/posts/youtube', { ...yb, from: toV2s(date),     to: toV2e(date),     postsType: 'publishedInRange' }),
+      safeGet(http, '/v2/analytics/posts/youtube', { ...yb, from: toV2s(prevDate), to: toV2e(prevDate), postsType: 'publishedInRange' }),
+      ytl(date,     'views'),
+      ytl(prevDate, 'views'),
+      ytl(date,     'estimatedMinutesWatched'),
+      ytl(prevDate, 'estimatedMinutesWatched'),
+      ytl(date,     'likes'),
+      ytl(prevDate, 'likes'),
+      ytl(date,     'shares'),
+      ytl(prevDate, 'shares'),
+    ]).then(([raw, praw, vR, pvR, wR, pwR, lR, plR, sR, psR]) => {
+      const todayViews  = sumTL(vR),  prevViews  = sumTL(pvR);
+      const todayWatch  = sumTL(wR),  prevWatch  = sumTL(pwR);
+      const todayLikes  = sumTL(lR),  prevLikes  = sumTL(plR);
+      const todayShares = sumTL(sR),  prevShares = sumTL(psR);
+
+      // YouTube Analytics delay: if today has no data, use previous day with a flag
+      const usingFallback = todayViews === 0 && todayWatch === 0;
+
+      const makeYT = (posts, views, watch, likes, shares, isFallback, dataDate) => ({
+        platform:       'youtube',
+        postsCount:     posts.length,
+        totalViews:     Math.round(views),
+        watchHours:     parseFloat((watch / 60).toFixed(1)),
+        totalLikes:     Math.round(likes),
+        totalShares:    Math.round(shares),
+        usingFallback:  isFallback,
+        dataDate:       dataDate,
+      });
+
+      data.youtube = makeYT(
+        extractPosts(raw),
+        usingFallback ? prevViews  : todayViews,
+        usingFallback ? prevWatch  : todayWatch,
+        usingFallback ? prevLikes  : todayLikes,
+        usingFallback ? prevShares : todayShares,
+        usingFallback, usingFallback ? prevDate : date,
+      );
+      prev.youtube = makeYT(extractPosts(praw), prevViews, prevWatch, prevLikes, prevShares, false, prevDate);
     }));
   }
 
@@ -1062,21 +1127,7 @@ async function buildDailySocialData() {
     const b = resolved[brand.key];
     if (!b?.blogId) { results[brand.key] = { ...b, data: {}, prev: {}, error: 'No blogId' }; continue; }
 
-    const [dayData, follCur, follPrev] = await Promise.all([
-      fetchOneDayBrand(http, userId, b, date, prevDate),
-      fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: prevDate, end: date   }, 'account'),
-      fetchFollowerTimeline(http, userId, b.blogId, 'instagram', { start: prevPrev, end: prevDate }, 'account'),
-    ]);
-
-    if (dayData.data.instagram) {
-      dayData.data.instagram.newFollowers = follCur.followerGrowth;
-      dayData.data.instagram.followers    = follCur.followers;
-    }
-    if (dayData.prev.instagram) {
-      dayData.prev.instagram.newFollowers = follPrev.followerGrowth;
-      dayData.prev.instagram.followers    = follPrev.followers;
-    }
-
+    const dayData = await fetchOneDayBrand(http, userId, b, date, prevDate);
     results[brand.key] = { ...b, data: dayData.data, prev: dayData.prev };
   }
 
@@ -1095,13 +1146,32 @@ async function generateDailyAI(results, date) {
       const b = results[bc.key];
       const d = b?.data || {}, p = b?.prev || {};
       const ig  = d.instagram, pig = p.instagram;
-      const tt  = d.tiktok,    ptt = p.tiktok;
       const fb  = d.facebook,  pfb = p.facebook;
       const yt  = d.youtube,   pyt = p.youtube;
-      return `${bc.name}:
-  Instagram: ${ig?.postsCount||0} posts · alcance ${ig?.totalReach||0} (ayer: ${pig?.totalReach||0}) · eng ${ig?.avgEng?.toFixed(2)||'—'}% · likes ${ig?.totalLikes||0} · comentarios ${ig?.totalComments||0} · guardados ${ig?.totalSaved||0} · compartidos ${ig?.totalShares||0} · nuevos seguidores ${ig?.newFollowers ?? '—'} (ayer: ${pig?.newFollowers ?? '—'})
-  Facebook: ${fb?.postsCount||0} posts · alcance ${fb?.totalReach||0} · likes ${fb?.totalLikes||0}
-  YouTube: ${yt?.postsCount||0} videos · ${yt?.totalViews||0} vistas · ${yt?.watchHours||0}h watch`;
+
+      const igLines = ig ? [
+        `  Instagram: ${ig.postsCount||0} posts publicados`,
+        `    Seguidores: ${ig.followers||'—'} (nuevos: ${ig.newFollowers ?? '—'}, ayer: ${pig?.newFollowers ?? '—'})`,
+        `    Impresiones: ${ig.impressions||0} · Alcance: ${ig.totalReach||0} (ayer: ${pig?.totalReach||0})`,
+        `    Cuentas alcanzadas: ${ig.accountsEngaged||0} · Interacciones posts: ${ig.postsInteractions||0}`,
+        `    Engagement: ${ig.avgEng?.toFixed(2)||'—'}% · Likes: ${ig.totalLikes||0} · Comentarios: ${ig.totalComments||0} · Guardados: ${ig.totalSaved||0} · Compartidos: ${ig.totalShares||0}`,
+        ig.stories
+          ? `    Stories: ${ig.stories.count} · Impr: ${ig.stories.impressions} · Alcance: ${ig.stories.reach} · Exits: ${ig.stories.exits} · TapsForward: ${ig.stories.tapsForward} · Respuestas: ${ig.stories.replies}`
+          : '    Stories: sin datos',
+        ig.topReels?.length
+          ? `    Top Reels: ${ig.topReels.map((r,i)=>`Reel${i+1} ${r.views||0}plays ${r.reach||0}alcance ${((r.averageWatchTime||0)/1000).toFixed(1)}s watchTime skipRate${r.reelsSkipRate||0}%`).join(' | ')}`
+          : '    Top Reels: sin reels',
+      ].join('\n') : '  Instagram: sin datos';
+
+      const fbLine = fb
+        ? `  Facebook: ${fb.postsCount||0} posts · alcance ${fb.totalReach||0} · likes ${fb.totalLikes||0} · eng ${fb.avgEng?.toFixed(2)||'—'}%`
+        : '  Facebook: sin datos';
+
+      const ytLine = yt
+        ? `  YouTube: ${yt.postsCount||0} videos publicados · ${yt.totalViews||0} vistas · ${yt.watchHours||0}h watch · ${yt.totalLikes||0} likes · ${yt.totalShares||0} shares${yt.usingFallback ? ` (datos de ${yt.dataDate}, analytics delayed)` : ''}`
+        : '  YouTube: sin datos';
+
+      return `${bc.name}:\n${igLines}\n${fbLine}\n${ytLine}`;
     }).join('\n\n');
 
     const { content } = await client.messages.create({
@@ -1193,41 +1263,54 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
       </td></tr>`;
     }
 
-    let statsRow = '';
+    let statsRows = '';
     if (isYT) {
-      statsRow = `<tr>
+      // Row 1: views, watch time, videos
+      const fallbackNote = pf.usingFallback
+        ? `<div style="color:#FF9800;font-size:8px;font-family:Arial;margin-top:2px;">⚠️ datos del ${shortDateES(pf.dataDate)} — Analytics tarda 24-48h</div>`
+        : '';
+      statsRows = `<tr>
         ${mCell('VISTAS',     fmtN(pf.totalViews||0),  dd(pf.totalViews,  prevpf?.totalViews))}
         ${mCell('WATCH TIME', `${pf.watchHours||0}h`,  dd(pf.watchHours,  prevpf?.watchHours))}
         ${mCell('VIDEOS',     pf.postsCount||0,         dd(pf.postsCount,  prevpf?.postsCount))}
+      </tr>
+      <tr><td colspan="3" style="padding:3px 8px 5px;border-top:1px solid #111;">
+        <table width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+            <div style="color:#888;font-size:10px;font-family:Arial;">👍 <strong style="color:#FFF;">${fmtN(pf.totalLikes||0)}</strong></div>
+            <div>${dd(pf.totalLikes, prevpf?.totalLikes)}</div>
+          </td>
+          <td style="padding:3px 0;text-align:center;">
+            <div style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(pf.totalShares||0)}</strong></div>
+            <div>${dd(pf.totalShares, prevpf?.totalShares)}</div>
+          </td>
+        </tr></table>
+        ${fallbackNote}
+      </td></tr>`;
+    } else if (isIG) {
+      // Row 1: followers, new followers, impressions
+      const follVal   = pf.followers != null ? fmtN(pf.followers) : '—';
+      const newFollVal = pf.newFollowers != null ? fmtNP(pf.newFollowers) : '—';
+      const newFollColor = (pf.newFollowers||0) >= 0 ? '#4CAF50' : '#FF4444';
+      statsRows = `<tr>
+        ${mCell('SEGUIDORES',  follVal,              dd(pf.followers,    prevpf?.followers))}
+        ${mCell('NUEVOS SEG',  newFollVal,           dd(pf.newFollowers, prevpf?.newFollowers), newFollColor)}
+        ${mCell('IMPRESIONES', fmtN(pf.impressions||0), dd(pf.impressions, prevpf?.impressions))}
+      </tr>
+      <tr>
+        ${mCell('ALCANCE',        fmtN(pf.totalReach||0),        dd(pf.totalReach,        prevpf?.totalReach))}
+        ${mCell('CTAS ALCANZADAS',fmtN(pf.accountsEngaged||0),   dd(pf.accountsEngaged,   prevpf?.accountsEngaged))}
+        ${mCell('INTERACCIONES',  fmtN(pf.postsInteractions||0), dd(pf.postsInteractions, prevpf?.postsInteractions))}
       </tr>`;
-    } else {
-      // PROBLEMA 3 FIX: use 7-day avg engagement as fallback when no posts today
-      const hasEngToday = pf.avgEng != null;
-      const engLabel = hasEngToday ? 'ENGAGEMENT' : (pf.engRef7d != null ? 'ENG PROM 7D' : 'ENGAGEMENT');
-      const engVal   = hasEngToday ? fmtPct(pf.avgEng) : (pf.engRef7d != null ? fmtPct(pf.engRef7d) : '—');
-      const engDelta = hasEngToday ? dd(pf.avgEng, prevpf?.avgEng) : '';
-      const thirdCell = isIG && pf.newFollowers != null
-        ? mCell('NUEVOS SEG', fmtNP(pf.newFollowers), dd(pf.newFollowers, prevpf?.newFollowers), pf.newFollowers >= 0 ? '#4CAF50' : '#FF4444')
-        : mCell('POSTS', pf.postsCount||0, dd(pf.postsCount, prevpf?.postsCount));
-      statsRow = `<tr>
-        ${mCell('ALCANCE', fmtN(pf.totalReach||0), dd(pf.totalReach, prevpf?.totalReach))}
-        ${mCell(engLabel, engVal, engDelta)}
-        ${thirdCell}
-      </tr>`;
-    }
 
-    // Engagement breakdown row (IG and FB only)
-    let engRow = '';
-    if (!isYT) {
-      const hasEng = (pf.totalLikes||0) + (pf.totalComments||0) + (pf.totalSaved||0) + (pf.totalShares||0) > 0;
+      // Engagement breakdown
+      const hasEng = (pf.totalLikes||0)+(pf.totalComments||0)+(pf.totalSaved||0)+(pf.totalShares||0) > 0;
       if (hasEng) {
-        const savedCell = isIG
-          ? `<td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
-              <div style="color:#888;font-size:10px;font-family:Arial;">🔖 <strong style="color:#FFF;">${fmtN(pf.totalSaved||0)}</strong></div>
-              <div>${dd(pf.totalSaved, prevpf?.totalSaved)}</div>
-            </td>`
-          : '';
-        engRow = `<tr><td colspan="3" style="padding:4px 6px 6px;border-top:1px solid #111;">
+        const hasEngToday = pf.avgEng != null;
+        const engLabel = hasEngToday ? 'ENGAGEMENT' : (pf.engRef7d != null ? 'ENG PROM 7D' : 'ENGAGEMENT');
+        const engVal   = hasEngToday ? fmtPct(pf.avgEng) : (pf.engRef7d != null ? fmtPct(pf.engRef7d) : '—');
+        const engDelta = hasEngToday ? dd(pf.avgEng, prevpf?.avgEng) : '';
+        statsRows += `<tr><td colspan="3" style="padding:4px 6px 2px;border-top:1px solid #111;">
           <table width="100%" cellpadding="0" cellspacing="0"><tr>
             <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
               <div style="color:#888;font-size:10px;font-family:Arial;">❤️ <strong style="color:#FFF;">${fmtN(pf.totalLikes||0)}</strong></div>
@@ -1237,7 +1320,107 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
               <div style="color:#888;font-size:10px;font-family:Arial;">💬 <strong style="color:#FFF;">${fmtN(pf.totalComments||0)}</strong></div>
               <div>${dd(pf.totalComments, prevpf?.totalComments)}</div>
             </td>
-            ${savedCell}
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">🔖 <strong style="color:#FFF;">${fmtN(pf.totalSaved||0)}</strong></div>
+              <div>${dd(pf.totalSaved, prevpf?.totalSaved)}</div>
+            </td>
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(pf.totalShares||0)}</strong></div>
+              <div>${dd(pf.totalShares, prevpf?.totalShares)}</div>
+            </td>
+            <td style="padding:3px 0;text-align:center;">
+              <div style="color:#888;font-size:8px;letter-spacing:1px;font-family:Arial;">${engLabel}</div>
+              <div style="color:#FFF;font-size:13px;font-weight:bold;font-family:Arial;">${engVal}</div>
+              <div style="height:13px;margin-top:2px;">${engDelta}</div>
+            </td>
+          </tr></table>
+        </td></tr>`;
+      }
+
+      // Stories section
+      if (pf.stories) {
+        const st = pf.stories;
+        statsRows += `<tr><td colspan="3" style="padding:4px 8px 2px;border-top:1px solid #1A1A1A;">
+          <div style="color:#C678DD;font-size:9px;font-weight:bold;letter-spacing:1px;font-family:Arial;margin-bottom:4px;">📖 STORIES (${st.count})</div>
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="text-align:center;border-right:1px solid #111;padding:2px 0;">
+              <div style="color:#888;font-size:9px;font-family:Arial;">IMPR</div>
+              <div style="color:#DDD;font-size:12px;font-family:Arial;">${fmtN(st.impressions)}</div>
+            </td>
+            <td style="text-align:center;border-right:1px solid #111;padding:2px 0;">
+              <div style="color:#888;font-size:9px;font-family:Arial;">ALCANCE</div>
+              <div style="color:#DDD;font-size:12px;font-family:Arial;">${fmtN(st.reach)}</div>
+            </td>
+            <td style="text-align:center;border-right:1px solid #111;padding:2px 0;">
+              <div style="color:#888;font-size:9px;font-family:Arial;">EXITS</div>
+              <div style="color:#FF6B6B;font-size:12px;font-family:Arial;">${fmtN(st.exits)}</div>
+            </td>
+            <td style="text-align:center;border-right:1px solid #111;padding:2px 0;">
+              <div style="color:#888;font-size:9px;font-family:Arial;">TAPS→</div>
+              <div style="color:#DDD;font-size:12px;font-family:Arial;">${fmtN(st.tapsForward)}</div>
+            </td>
+            <td style="text-align:center;padding:2px 0;">
+              <div style="color:#888;font-size:9px;font-family:Arial;">REPLIES</div>
+              <div style="color:#4CAF50;font-size:12px;font-family:Arial;">${fmtN(st.replies)}</div>
+            </td>
+          </tr></table>
+        </td></tr>`;
+      }
+
+      // Top Reels section
+      if (pf.topReels?.length) {
+        const reelRows = pf.topReels.map((r, i) => {
+          const watchSec = r.averageWatchTime ? ((r.averageWatchTime)/1000).toFixed(1) : '—';
+          const skipPct  = r.reelsSkipRate != null ? r.reelsSkipRate : null;
+          const skipStr  = skipPct != null ? `${fmtPct(skipPct)}${skipPct > 50 ? ' ⚠️' : ''}` : '—';
+          return `<tr style="border-bottom:1px solid #0D0D0D;">
+            <td style="padding:4px 6px;color:#888;font-size:9px;font-family:Arial;">Reel ${i+1}</td>
+            <td style="padding:4px 4px;text-align:center;border-left:1px solid #111;">
+              <div style="color:#888;font-size:8px;font-family:Arial;">PLAYS</div>
+              <div style="color:#FFF;font-size:11px;font-family:Arial;">${fmtN(r.views||0)}</div>
+            </td>
+            <td style="padding:4px 4px;text-align:center;border-left:1px solid #111;">
+              <div style="color:#888;font-size:8px;font-family:Arial;">ALCANCE</div>
+              <div style="color:#FFF;font-size:11px;font-family:Arial;">${fmtN(r.reach||0)}</div>
+            </td>
+            <td style="padding:4px 4px;text-align:center;border-left:1px solid #111;">
+              <div style="color:#888;font-size:8px;font-family:Arial;">WATCH AVG</div>
+              <div style="color:#FFF;font-size:11px;font-family:Arial;">${watchSec}s</div>
+            </td>
+            <td style="padding:4px 4px;text-align:center;border-left:1px solid #111;">
+              <div style="color:#888;font-size:8px;font-family:Arial;">SKIP</div>
+              <div style="color:${skipPct > 50 ? '#FF4444' : '#AAA'};font-size:11px;font-family:Arial;">${skipStr}</div>
+            </td>
+          </tr>`;
+        }).join('');
+        statsRows += `<tr><td colspan="3" style="padding:4px 8px 4px;border-top:1px solid #1A1A1A;">
+          <div style="color:#FF9800;font-size:9px;font-weight:bold;letter-spacing:1px;font-family:Arial;margin-bottom:3px;">🎬 TOP REELS</div>
+          <table width="100%" cellpadding="0" cellspacing="0">${reelRows}</table>
+        </td></tr>`;
+      }
+    } else {
+      // Facebook
+      const hasEngToday = pf.avgEng != null;
+      const engLabel = hasEngToday ? 'ENGAGEMENT' : (pf.engRef7d != null ? 'ENG PROM 7D' : 'ENGAGEMENT');
+      const engVal   = hasEngToday ? fmtPct(pf.avgEng) : (pf.engRef7d != null ? fmtPct(pf.engRef7d) : '—');
+      const engDelta = hasEngToday ? dd(pf.avgEng, prevpf?.avgEng) : '';
+      statsRows = `<tr>
+        ${mCell('ALCANCE', fmtN(pf.totalReach||0), dd(pf.totalReach, prevpf?.totalReach))}
+        ${mCell(engLabel, engVal, engDelta)}
+        ${mCell('POSTS', pf.postsCount||0, dd(pf.postsCount, prevpf?.postsCount))}
+      </tr>`;
+      const hasEng = (pf.totalLikes||0)+(pf.totalComments||0)+(pf.totalShares||0) > 0;
+      if (hasEng) {
+        statsRows += `<tr><td colspan="3" style="padding:4px 6px 6px;border-top:1px solid #111;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">❤️ <strong style="color:#FFF;">${fmtN(pf.totalLikes||0)}</strong></div>
+              <div>${dd(pf.totalLikes, prevpf?.totalLikes)}</div>
+            </td>
+            <td style="padding:3px 0;text-align:center;border-right:1px solid #111;">
+              <div style="color:#888;font-size:10px;font-family:Arial;">💬 <strong style="color:#FFF;">${fmtN(pf.totalComments||0)}</strong></div>
+              <div>${dd(pf.totalComments, prevpf?.totalComments)}</div>
+            </td>
             <td style="padding:3px 0;text-align:center;">
               <div style="color:#888;font-size:10px;font-family:Arial;">↗️ <strong style="color:#FFF;">${fmtN(pf.totalShares||0)}</strong></div>
               <div>${dd(pf.totalShares, prevpf?.totalShares)}</div>
@@ -1254,7 +1437,7 @@ function buildDailySocialHTML({ date, prevDate, results, aiText }) {
           <span style="color:${pm.color};font-size:11px;font-weight:bold;letter-spacing:1px;font-family:Arial;">${pm.icon} ${pm.name}</span>
           <span style="color:#444;font-size:9px;font-family:Arial;margin-left:8px;">${pf.postsCount||0} posts publicados</span>
         </td></tr>
-        <tr><td><table width="100%" cellpadding="0" cellspacing="0">${statsRow}${engRow}</table></td></tr>
+        <tr><td><table width="100%" cellpadding="0" cellspacing="0">${statsRows}</table></td></tr>
       </table>
     </td></tr>`;
   }
