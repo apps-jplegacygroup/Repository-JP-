@@ -1391,6 +1391,25 @@ function buildDailyText(data) {
 // HTML EMAIL BUILDERS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ─── Design tokens ────────────────────────────────────────────────────────────
+const C = {
+  bg:        '#222222',
+  bgDeep:    '#111111',
+  bgCard:    '#2a2a2a',
+  bgAlt:     '#1e1e1e',
+  border:    '#5C5C5C',
+  borderSub: '#333333',
+  gold:      '#ECB009',
+  text:      '#EEEEEE',
+  textMid:   '#AAAAAA',
+  textDim:   '#777777',
+  green:     '#4CAF50',
+  red:       '#FF4444',
+  orange:    '#FF8800',
+  alertRed:  '#3a0000',
+  alertYel:  '#2a2200',
+};
+
 function htmlWrapper(title, body) {
   return `<!DOCTYPE html>
 <html lang="es">
@@ -1399,10 +1418,10 @@ function htmlWrapper(title, body) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title}</title>
 </head>
-<body style="margin:0;padding:0;background:#111111;font-family:Arial,sans-serif;color:#FFFFFF;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#111111;">
-  <tr><td align="center" style="padding:20px 10px;">
-    <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#1A1A1A;border-radius:8px;overflow:hidden;">
+<body style="margin:0;padding:0;background:${C.bgDeep};font-family:system-ui,-apple-system,sans-serif;color:${C.text};">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:${C.bgDeep};">
+  <tr><td align="center" style="padding:24px 10px;">
+    <table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;background:${C.bg};border-radius:10px;overflow:hidden;border:1px solid ${C.borderSub};">
       ${body}
     </table>
   </td></tr>
@@ -1412,25 +1431,26 @@ function htmlWrapper(title, body) {
 }
 
 function htmlSection(content) {
-  return `<tr><td style="padding:20px 24px;border-bottom:1px solid #2A2A2A;">${content}</td></tr>`;
+  return `<tr><td style="padding:20px 24px;border-bottom:1px solid ${C.border};">${content}</td></tr>`;
 }
 
 function htmlHeader(title, subtitle = '') {
-  return `<tr><td style="background:#0D0D0D;padding:24px;border-bottom:2px solid #333;">
-    <h1 style="margin:0;font-size:20px;font-weight:bold;color:#FFFFFF;text-transform:uppercase;letter-spacing:1px;">${title}</h1>
-    ${subtitle ? `<p style="margin:6px 0 0;font-size:13px;color:#888;">${subtitle}</p>` : ''}
+  return `<tr><td style="background:${C.bgDeep};padding:28px 24px;border-bottom:3px solid ${C.gold};">
+    <div style="display:inline-block;background:${C.gold};color:${C.bgDeep};font-size:11px;font-weight:700;letter-spacing:2px;padding:3px 10px;border-radius:3px;text-transform:uppercase;margin-bottom:10px;">JP Legacy Group</div>
+    <h1 style="margin:0;font-size:22px;font-weight:700;color:${C.gold};letter-spacing:0.5px;">${title}</h1>
+    ${subtitle ? `<p style="margin:6px 0 0;font-size:13px;color:${C.textDim};">${subtitle}</p>` : ''}
   </td></tr>`;
 }
 
 function htmlSectionTitle(title) {
-  return `<h2 style="margin:0 0 12px;font-size:14px;font-weight:bold;color:#AAAAAA;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #333;padding-bottom:8px;">${title}</h2>`;
+  return `<h2 style="margin:0 0 14px;font-size:12px;font-weight:700;color:${C.gold};text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid ${C.border};padding-bottom:8px;">${title}</h2>`;
 }
 
 function buildAlertBadge(type, text) {
-  const bg = type === 'critical' ? '#FF4444' : '#FFD700';
-  const fg = type === 'critical' ? '#FFFFFF' : '#000000';
-  const icon = type === 'critical' ? '🔴' : '🟡';
-  return `<div style="background:${bg};color:${fg};padding:8px 12px;border-radius:4px;margin-bottom:6px;font-size:13px;">${icon} ${text}</div>`;
+  const bg     = type === 'critical' ? C.alertRed : C.alertYel;
+  const border = type === 'critical' ? C.red : C.gold;
+  const icon   = type === 'critical' ? '🔴' : '🟡';
+  return `<div style="background:${bg};border-left:3px solid ${border};color:${C.text};padding:9px 12px;border-radius:0 4px 4px 0;margin-bottom:6px;font-size:13px;line-height:1.4;">${icon} ${text}</div>`;
 }
 
 function buildDailyHTML(data) {
@@ -1463,62 +1483,67 @@ function buildDailyHTML(data) {
     const acct = data.accounts[key];
     if (!acct) continue;
     const goal = CADENCE_GOALS[key];
+    const pct = goal > 0 ? acct.publishedThisWeek / goal : 0;
+    const cadStatus = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
     let ac = htmlSectionTitle(`${icon} ${label}`);
-    ac += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
-    ac += `<tr><td>Publicados hoy:</td><td><strong style="color:#FFF;">${acct.publishedToday}</strong></td>`;
-    ac += `<td>Esta semana:</td><td><strong style="color:#FFF;">${acct.publishedThisWeek}/${goal}</strong></td></tr>`;
-    ac += `<tr><td>Días sin publicar:</td><td colspan="3"><strong style="color:${acct.daysSincePublish !== null && acct.daysSincePublish > 4 ? '#FF4444' : '#FFF'};">${acct.daysSincePublish !== null ? acct.daysSincePublish : 'N/A'}</strong></td></tr>`;
+    // Stats row
+    ac += `<table width="100%" cellpadding="5" cellspacing="0" style="font-size:13px;color:${C.textMid};border-collapse:collapse;margin-bottom:10px;">`;
+    ac += `<tr style="background:${C.bgAlt};"><td style="padding:6px 8px;border-radius:4px 0 0 4px;">Publicados hoy</td><td style="padding:6px 8px;"><strong style="color:${C.text};">${acct.publishedToday}</strong></td>`;
+    ac += `<td style="padding:6px 8px;">Esta semana</td><td style="padding:6px 8px;border-radius:0 4px 4px 0;"><strong style="color:${C.text};">${acct.publishedThisWeek}/${goal}</strong> ${cadStatus}</td></tr>`;
+    ac += `<tr><td style="padding:6px 8px;color:${C.textMid};">Días sin publicar</td><td colspan="3" style="padding:6px 8px;"><strong style="color:${acct.daysSincePublish !== null && acct.daysSincePublish > 4 ? C.red : C.text};">${acct.daysSincePublish !== null ? acct.daysSincePublish : 'N/A'}</strong></td></tr>`;
     ac += `</table>`;
 
     if (acct.upcomingWeek.length > 0) {
-      ac += `<p style="font-size:12px;color:#888;margin:12px 0 6px;">📅 PRÓXIMOS 7 DÍAS</p>`;
+      ac += `<p style="font-size:11px;font-weight:700;color:${C.gold};text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;">📅 Próximos 7 días</p>`;
       for (const t of acct.upcomingWeek) {
-        ac += `<div style="background:#222;border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:13px;">`;
-        ac += `<strong style="color:#FFF;">${t.due_on}</strong> — ${shortName(t.name)}`;
-        if (t.platforms.length > 0) ac += `<br><span style="color:#888;">📱 ${t.platforms.join(', ')}</span>`;
-        if (t.links.dropbox) ac += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
-        else ac += `<br><span style="color:#FF8800;font-size:12px;">⚠️ Sin archivo Dropbox</span>`;
-        ac += `<br><span style="color:#666;font-size:12px;">Stage: ${t.stage}</span>`;
+        ac += `<div style="background:${C.bgCard};border-radius:6px;padding:9px 12px;margin-bottom:6px;font-size:13px;border-left:2px solid ${C.border};">`;
+        ac += `<span style="color:${C.gold};font-weight:700;">${t.due_on}</span> <span style="color:${C.text};">— ${shortName(t.name)}</span>`;
+        if (t.platforms.length > 0) ac += `<br><span style="color:${C.textDim};font-size:12px;">📱 ${t.platforms.join(', ')}</span>`;
+        if (t.links.dropbox) ac += `<br><a href="${t.links.dropbox}" style="color:${C.gold};font-size:12px;text-decoration:none;">🔗 Dropbox</a>`;
+        else ac += `<br><span style="color:${C.orange};font-size:12px;">⚠️ Sin archivo Dropbox</span>`;
+        ac += `<br><span style="color:${C.textDim};font-size:11px;">Stage: ${t.stage}</span>`;
         ac += `</div>`;
       }
     } else {
-      ac += `<p style="color:#FF8800;font-size:13px;margin:8px 0 0;">⚠️ Sin contenido programado en próximos 7 días</p>`;
+      ac += `<p style="color:${C.orange};font-size:13px;margin:8px 0 0;">⚠️ Sin contenido programado en próximos 7 días</p>`;
     }
     sections.push(htmlSection(ac));
   }
 
   // Pipeline
   let pc = htmlSectionTitle('🎬 Pipeline General — Por Stage');
-  pc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
-  pc += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Stage</th><th style="text-align:right;color:#888;">Videos</th></tr>`;
+  pc += `<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;border-radius:6px;overflow:hidden;">`;
+  pc += `<tr style="background:${C.bgAlt};"><th style="text-align:left;color:${C.textDim};padding:8px 10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Stage</th><th style="text-align:right;color:${C.textDim};padding:8px 10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Videos</th></tr>`;
   const activeStageList = ['Concept/Idea', 'Resources pending', 'Ready to edit', 'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload'];
-  for (const s of activeStageList) {
+  for (let i = 0; i < activeStageList.length; i++) {
+    const s = activeStageList[i];
     const count = data.pipeline.stageCounts[s] || 0;
     const warn = (s === 'Aproved' && count === 0) || (s === 'Ready to upload' && count === 0);
-    pc += `<tr style="border-bottom:1px solid #2A2A2A;">
-      <td style="color:#CCC;">${s}</td>
-      <td style="text-align:right;color:${warn ? '#FF4444' : '#FFF'};font-weight:${warn ? 'bold' : 'normal'};">${count}${warn ? ' ⚠️' : ''}</td>
+    const rowBg = i % 2 === 0 ? C.bg : C.bgCard;
+    pc += `<tr style="background:${rowBg};border-bottom:1px solid ${C.borderSub};">
+      <td style="color:${C.textMid};padding:8px 10px;">${s}</td>
+      <td style="text-align:right;color:${warn ? C.red : C.text};font-weight:${warn ? '700' : '400'};padding:8px 10px;">${count}${warn ? ' ⚠️' : ''}</td>
     </tr>`;
   }
-  pc += `<tr style="border-top:2px solid #444;">
-    <td style="color:#FFF;font-weight:bold;">Pipeline activo total</td>
-    <td style="text-align:right;color:#FFF;font-weight:bold;">${data.pipeline.activeTotal}</td>
+  pc += `<tr style="background:${C.bgAlt};border-top:2px solid ${C.gold};">
+    <td style="color:${C.gold};font-weight:700;padding:9px 10px;">Pipeline activo total</td>
+    <td style="text-align:right;color:${C.gold};font-weight:700;padding:9px 10px;">${data.pipeline.activeTotal}</td>
   </tr>`;
   pc += `</table>`;
-  pc += `<p style="font-size:12px;color:#666;margin:8px 0 0;">Scheduled/Published: ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} · Paused: ${data.pipeline.stageCounts['Paused'] || 0} · Backup: ${data.pipeline.stageCounts['Backup'] || 0}</p>`;
+  pc += `<p style="font-size:12px;color:${C.textDim};margin:8px 0 0;">Scheduled/Published: ${data.pipeline.stageCounts['Scheduled/Publlished'] || 0} · Paused: ${data.pipeline.stageCounts['Paused'] || 0} · Backup: ${data.pipeline.stageCounts['Backup'] || 0}</p>`;
   sections.push(htmlSection(pc));
 
   // Stagnated
   let sc = htmlSectionTitle('⏱️ Videos Estancados (+3 días)');
   if (data.stagnated.length === 0) {
-    sc += '<p style="color:#4CAF50;margin:0;">✅ Sin videos estancados hoy</p>';
+    sc += `<p style="color:${C.green};margin:0;">✅ Sin videos estancados hoy</p>`;
   } else {
     for (const t of data.stagnated) {
-      sc += `<div style="background:#2A1800;border-left:3px solid #FF8800;padding:8px 10px;margin-bottom:6px;font-size:13px;border-radius:2px;">`;
-      sc += `<strong style="color:#FF8800;">${shortName(t.name)}</strong>`;
-      sc += `<br><span style="color:#AAA;">Stage: ${t.stage} | ${t.days_in_stage} días | ${t.assignee || '—'}</span>`;
-      if (t.accounts.length > 0) sc += `<br><span style="color:#888;">Cuenta: ${t.accounts.join(' + ')}</span>`;
-      if (t.links.dropbox) sc += `<br><a href="${t.links.dropbox}" style="color:#4FC3F7;font-size:12px;">🔗 Dropbox</a>`;
+      sc += `<div style="background:#2A1800;border-left:3px solid ${C.orange};padding:9px 12px;margin-bottom:6px;font-size:13px;border-radius:0 6px 6px 0;">`;
+      sc += `<strong style="color:${C.orange};">${shortName(t.name)}</strong>`;
+      sc += `<br><span style="color:${C.textMid};font-size:12px;">Stage: ${t.stage} | ${t.days_in_stage} días | ${t.assignee || '—'}</span>`;
+      if (t.accounts.length > 0) sc += `<br><span style="color:${C.textDim};font-size:12px;">Cuenta: ${t.accounts.join(' + ')}</span>`;
+      if (t.links.dropbox) sc += `<br><a href="${t.links.dropbox}" style="color:${C.gold};font-size:12px;text-decoration:none;">🔗 Dropbox</a>`;
       sc += `</div>`;
     }
   }
@@ -1526,31 +1551,40 @@ function buildDailyHTML(data) {
 
   // Inventory
   let ic = htmlSectionTitle('📦 Inventario');
-  ic += `<table width="100%" cellpadding="4" cellspacing="0" style="font-size:13px;color:#CCC;">`;
-  ic += `<tr><td>Ready to upload:</td><td><strong style="color:#FFF;">${data.inventory.readyToUpload} videos</strong></td></tr>`;
-  ic += `<tr><td>Sin fecha asignada:</td><td><strong style="color:${data.inventory.noDate > 24 ? '#FF4444' : '#FFF'};">${data.inventory.noDate} videos</strong></td></tr>`;
-  ic += `<tr><td>Paused recuperables:</td><td><strong style="color:#FFF;">${data.inventory.pausedRecoverable}</strong></td></tr>`;
   const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
-  ic += `<tr><td>Producidos esta semana:</td><td><strong style="color:#FFF;">${data.inventory.producedThisWeek}</strong></td></tr>`;
-  ic += `<tr><td>Publicados esta semana:</td><td><strong style="color:#FFF;">${data.inventory.publishedThisWeek}</strong></td></tr>`;
-  ic += `<tr><td>${surplus >= 0 ? 'Superávit' : 'Déficit'}:</td><td><strong style="color:${surplus >= 0 ? '#4CAF50' : '#FF4444'};">${surplus >= 0 ? '+' : ''}${surplus}</strong></td></tr>`;
+  const invRows = [
+    ['Ready to upload', `${data.inventory.readyToUpload} videos`, null],
+    ['Sin fecha asignada', `${data.inventory.noDate} videos`, data.inventory.noDate > 24 ? C.red : null],
+    ['Paused recuperables', String(data.inventory.pausedRecoverable), null],
+    ['Producidos esta semana', String(data.inventory.producedThisWeek), null],
+    ['Publicados esta semana', String(data.inventory.publishedThisWeek), null],
+    [surplus >= 0 ? 'Superávit' : 'Déficit', `${surplus >= 0 ? '+' : ''}${surplus}`, surplus >= 0 ? C.green : C.red],
+  ];
+  ic += `<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  for (let i = 0; i < invRows.length; i++) {
+    const [label, val, color] = invRows[i];
+    const rowBg = i % 2 === 0 ? C.bg : C.bgCard;
+    ic += `<tr style="background:${rowBg};"><td style="color:${C.textMid};padding:7px 10px;">${label}</td><td style="text-align:right;padding:7px 10px;"><strong style="color:${color || C.text};">${val}</strong></td></tr>`;
+  }
   ic += `</table>`;
   sections.push(htmlSection(ic));
 
   // Cadence
   let cad = htmlSectionTitle('📊 Cadencia Semanal');
-  cad += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
-  cad += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Cuenta</th><th style="color:#888;">Meta</th><th style="color:#888;">Real</th><th style="color:#888;">Estado</th></tr>`;
+  cad += `<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  cad += `<tr style="background:${C.bgAlt};"><th style="text-align:left;color:${C.textDim};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Cuenta</th><th style="text-align:center;color:${C.textDim};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Meta</th><th style="text-align:center;color:${C.textDim};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Real</th><th style="text-align:center;color:${C.textDim};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Estado</th></tr>`;
   const cadenceRows = [{ label: 'Paola', key: 'Paola' }, { label: 'Jorge', key: 'Jorge' }, { label: 'JP Legacy', key: 'JP Legacy' }];
-  for (const row of cadenceRows) {
+  for (let i = 0; i < cadenceRows.length; i++) {
+    const row = cadenceRows[i];
     const c = data.cadence[row.key];
     const pct = c.goal > 0 ? c.actual / c.goal : 0;
     const status = pct >= 1 ? '🟢' : pct >= 0.5 ? '🟡' : '🔴';
-    cad += `<tr style="border-bottom:1px solid #2A2A2A;">
-      <td style="color:#CCC;">${row.label}</td>
-      <td style="text-align:center;color:#888;">${c.goal}/sem</td>
-      <td style="text-align:center;color:#FFF;font-weight:bold;">${c.actual}/sem</td>
-      <td style="text-align:center;">${status}</td>
+    const rowBg = i % 2 === 0 ? C.bg : C.bgCard;
+    cad += `<tr style="background:${rowBg};border-bottom:1px solid ${C.borderSub};">
+      <td style="color:${C.text};padding:9px 10px;font-weight:600;">${row.label}</td>
+      <td style="text-align:center;color:${C.textMid};padding:9px 10px;">${c.goal}/sem</td>
+      <td style="text-align:center;color:${C.gold};font-weight:700;padding:9px 10px;">${c.actual}/sem</td>
+      <td style="text-align:center;padding:9px 10px;font-size:16px;">${status}</td>
     </tr>`;
   }
   cad += `</table>`;
@@ -1558,8 +1592,8 @@ function buildDailyHTML(data) {
 
   // Team
   let tc = htmlSectionTitle('👥 Equipo — Semana Actual');
-  tc += `<table width="100%" cellpadding="6" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
-  tc += `<tr style="background:#222;"><th style="text-align:left;color:#888;">Métrica</th><th style="color:#888;">Nicole Zapata</th><th style="color:#888;">Karen</th></tr>`;
+  tc += `<table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">`;
+  tc += `<tr style="background:${C.bgAlt};"><th style="text-align:left;color:${C.textDim};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Métrica</th><th style="text-align:center;color:${C.gold};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Nicole Zapata</th><th style="text-align:center;color:${C.gold};padding:8px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Karen</th></tr>`;
   const teamRows = [
     ['Completadas semana', data.team.nicole.completedWeek, data.team.karen.completedWeek],
     ['En progreso hoy', data.team.nicole.inProgressToday, data.team.karen.inProgressToday],
@@ -1567,21 +1601,24 @@ function buildDailyHTML(data) {
     ['Racha (días)', data.team.nicole.streak, data.team.karen.streak],
     ['Tasa a tiempo', `${data.team.nicole.onTimeRate}%`, `${data.team.karen.onTimeRate}%`],
   ];
-  for (const [label, n, k] of teamRows) {
-    tc += `<tr style="border-bottom:1px solid #2A2A2A;"><td style="color:#CCC;">${label}</td><td style="text-align:center;color:#FFF;">${n}</td><td style="text-align:center;color:#FFF;">${k}</td></tr>`;
+  for (let i = 0; i < teamRows.length; i++) {
+    const [label, n, k] = teamRows[i];
+    const rowBg = i % 2 === 0 ? C.bg : C.bgCard;
+    tc += `<tr style="background:${rowBg};border-bottom:1px solid ${C.borderSub};"><td style="color:${C.textMid};padding:9px 10px;">${label}</td><td style="text-align:center;color:${C.text};font-weight:600;padding:9px 10px;">${n}</td><td style="text-align:center;color:${C.text};font-weight:600;padding:9px 10px;">${k}</td></tr>`;
   }
   tc += `</table>`;
-  tc += `<p style="font-size:12px;color:#888;margin:8px 0 0;">🏆 Más productiva hoy: <strong style="color:#FFF;">${data.team.mostProductiveToday}</strong></p>`;
+  tc += `<p style="font-size:12px;color:${C.textMid};margin:10px 0 0;">🏆 Más productiva hoy: <strong style="color:${C.gold};">${data.team.mostProductiveToday}</strong></p>`;
   sections.push(htmlSection(tc));
 
   // AI Analysis
   let ai = htmlSectionTitle('🤖 Análisis IA — JP Legacy Agent');
-  ai += `<p style="font-size:14px;color:#CCC;line-height:1.6;margin:0;">${data.aiAnalysis}</p>`;
+  ai += `<p style="font-size:14px;color:${C.textMid};line-height:1.7;margin:0;font-style:italic;border-left:3px solid ${C.gold};padding-left:14px;">${data.aiAnalysis}</p>`;
   sections.push(htmlSection(ai));
 
   // Footer
-  sections.push(`<tr><td style="padding:16px 24px;background:#0D0D0D;text-align:center;">
-    <p style="margin:0;font-size:11px;color:#555;">JP Legacy Agent · Auto-generado · ${data.todayFormatted} ${data.generatedAt} ET</p>
+  sections.push(`<tr><td style="padding:18px 24px;background:${C.bgDeep};text-align:center;border-top:1px solid ${C.borderSub};">
+    <p style="margin:0 0 4px;font-size:12px;color:${C.gold};font-weight:700;letter-spacing:1px;text-transform:uppercase;">JP Legacy Group</p>
+    <p style="margin:0;font-size:11px;color:${C.textDim};">Auto-generado por JP Legacy Agent · ${data.todayFormatted} · ${data.generatedAt} ET</p>
   </td></tr>`);
 
   return htmlWrapper('Reporte Diario Marketing JP', sections.join('\n'));
@@ -1828,6 +1865,7 @@ module.exports = {
   sendMonthlyMarketingReport,
   buildDailyData,
   buildDailyText,
+  buildDailyHTML,
   buildWeeklyData,
   buildMonthlyData,
 };
