@@ -1015,12 +1015,28 @@ async function fetchOneDayBrand(http, userId, b, date, prevDate) {
   }
 
   if (daily.includes('youtube')) {
+    // Metricool YouTube timelines: 'views' = channel daily views, 'estimatedMinutesWatched' = daily watch time
+    // Per-post analytics aren't available same day (Shorts especially), so timelines are the reliable source
     jobs.push(Promise.all([
       safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     postsType: 'publishedInRange' }),
       safeGet(http, '/v2/analytics/posts/youtube', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), postsType: 'publishedInRange' }),
-    ]).then(([raw, praw]) => {
-      data.youtube = agYt(extractPosts(raw));
-      prev.youtube = agYt(extractPosts(praw));
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     metric: 'views',                    network: 'youtube' }),
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'views',                    network: 'youtube' }),
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(date),     to: toV2e(date),     metric: 'estimatedMinutesWatched',  network: 'youtube' }),
+      safeGet(http, '/v2/analytics/timelines', { userId, blogId: b.blogId, from: toV2s(prevDate), to: toV2e(prevDate), metric: 'estimatedMinutesWatched',  network: 'youtube' }),
+    ]).then(([raw, praw, viewsRaw, pViewsRaw, watchRaw, pWatchRaw]) => {
+      const sumVals = (r) => (r?.data?.[0]?.values||[]).reduce((s,v)=>s+(v.value||0),0);
+      const chViews  = sumVals(viewsRaw),  pchViews = sumVals(pViewsRaw);
+      const chWatch  = sumVals(watchRaw),  pchWatch = sumVals(pWatchRaw);
+      const ytMerge = (posts, chV, chW) => {
+        const base = agYt(posts);
+        return { ...base,
+          totalViews: base.totalViews || Math.round(chV),
+          watchHours: base.watchHours || Math.round(chW / 60),
+        };
+      };
+      data.youtube = ytMerge(extractPosts(raw),  chViews,  chWatch);
+      prev.youtube = ytMerge(extractPosts(praw), pchViews, pchWatch);
     }));
   }
 
