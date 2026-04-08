@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const https = require('https');
+const axios = require('axios');
 const { startRetryQueue } = require('./services/retryQueue');
 const { startDailyReport, printDailyReport } = require('./services/reports');
 const { startMarketingReport } = require('./services/marketingReport');
@@ -50,6 +51,75 @@ app.use(express.json());
 // ─── Health endpoint ────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+// ─── Debug: Asana token diagnostic (TEMPORAL) ───────────────────────────────
+app.get('/debug/asana-test', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const results = {};
+
+  // 1. Detect which token env vars are present
+  const tokenNames = ['ASANA_TOKEN', 'ASANA_ACCESS_TOKEN', 'ASANA_PAT', 'ASANA_API_KEY'];
+  results.tokensPresentes = tokenNames.filter(t => !!process.env[t]);
+  const token = process.env.ASANA_TOKEN || process.env.ASANA_ACCESS_TOKEN ||
+                process.env.ASANA_PAT   || process.env.ASANA_API_KEY || null;
+  results.tokenUsado     = token ? `${token.slice(0, 12)}... (${token.length} chars)` : 'NINGUNO';
+  results.tokenVariable  = results.tokensPresentes[0] || 'NINGUNO';
+
+  if (!token) {
+    return res.json({ ...results, error: 'No se encontró ningún token de Asana en las variables de entorno' });
+  }
+
+  // 2. Verify token against /users/me
+  try {
+    const r1 = await axios.get('https://app.asana.com/api/1.0/users/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    results.asanaStatus = r1.status;
+    results.asanaUser   = r1.data?.data?.name || '(sin nombre)';
+    results.asanaEmail  = r1.data?.data?.email || '(sin email)';
+  } catch (e) {
+    results.asanaStatus = e.response?.status || 'ERROR';
+    results.asanaError  = e.response?.data?.errors?.[0]?.message || e.message;
+  }
+
+  // 3. Fetch first 3 tasks from pipeline project with memberships
+  try {
+    const r2 = await axios.get(
+      'https://app.asana.com/api/1.0/projects/1211674641565541/tasks',
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { limit: 3, opt_fields: 'name,memberships.section.name' },
+      }
+    );
+    results.pipelineStatus   = r2.status;
+    results.pipelineTareas   = r2.data?.data?.length ?? 0;
+    results.primeraTarea     = r2.data?.data?.[0]?.name || 'vacío';
+    results.primeraSeccion   = r2.data?.data?.[0]?.memberships?.[0]?.section?.name || 'sin sección';
+  } catch (e) {
+    results.pipelineStatus = e.response?.status || 'ERROR';
+    results.pipelineError  = e.response?.data?.errors?.[0]?.message || e.message;
+  }
+
+  // 4. Fetch Team Overview project
+  try {
+    const r3 = await axios.get(
+      'https://app.asana.com/api/1.0/projects/1212623827839295/tasks',
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { limit: 3, opt_fields: 'name,assignee.name,completed' },
+      }
+    );
+    results.teamOverviewStatus  = r3.status;
+    results.teamOverviewTareas  = r3.data?.data?.length ?? 0;
+    results.primeraTeamTarea    = r3.data?.data?.[0]?.name || 'vacío';
+    results.primeraTeamAssignee = r3.data?.data?.[0]?.assignee?.name || 'sin assignee';
+  } catch (e) {
+    results.teamOverviewStatus = e.response?.status || 'ERROR';
+    results.teamOverviewError  = e.response?.data?.errors?.[0]?.message || e.message;
+  }
+
+  res.json(results);
 });
 
 app.use('/webhook', webhookRouter);
