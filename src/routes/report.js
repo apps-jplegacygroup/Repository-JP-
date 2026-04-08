@@ -1,5 +1,6 @@
 const express = require('express');
 const { buildReport, getAllReports } = require('../services/reports');
+const { buildDailyData, buildDailyText } = require('../services/marketingReport');
 const { getQueue, todayKey } = require('../utils/storage');
 
 const router = express.Router();
@@ -20,6 +21,19 @@ router.get('/json', (req, res) => {
 // GET /report/queue — current retry queue
 router.get('/queue', (req, res) => {
   res.json(getQueue());
+});
+
+// GET /test-marketing-report — TEMPORAL: preview del nuevo reporte diario de marketing
+router.get('/test-marketing-report', async (req, res) => {
+  try {
+    console.log('[Test] Generando preview del reporte diario de marketing...');
+    const data = await buildDailyData();
+    const text = buildDailyText(data);
+    res.type('text/plain; charset=utf-8').send(text);
+  } catch (err) {
+    console.error('[Test] Error generando reporte de marketing:', err);
+    res.status(500).type('text/plain').send(`Error: ${err.message}\n\n${err.stack}`);
+  }
 });
 
 module.exports = router;

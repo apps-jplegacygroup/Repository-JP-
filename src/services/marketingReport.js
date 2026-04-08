@@ -1504,6 +1504,7 @@ module.exports = {
   sendWeeklyMarketingReport,
   sendMonthlyMarketingReport,
   buildDailyData,
+  buildDailyText,
   buildWeeklyData,
   buildMonthlyData,
 };
