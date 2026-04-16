@@ -25,7 +25,7 @@ const PIPELINE_STAGES = [
   'Backup',
 ];
 
-const NON_STAGNATED_STAGES = ['Scheduled/Publlished', 'Archive', 'Backup'];
+const NON_STAGNATED_STAGES = ['Scheduled/Publlished', 'Archive', 'Backup', 'Paused'];
 
 const CADENCE_GOALS = { Paola: 5, Jorge: 4, 'JP Legacy': 7 };
 
@@ -313,7 +313,10 @@ function enrichPipelineTask(task) {
   console.log('[DEBUG] notes for task:', task.name?.substring(0, 40), '| notes:', task.notes?.substring(0, 150));
   const stage = getTaskStage(task);
   const accounts = getTaskAccounts(task);
-  const links = extractLinks(task.notes);
+  const links = {
+    ...extractLinks(task.notes),
+    frame: getCF(task, 'Link de Frame') || null,
+  };
   const platforms = getTaskPlatformTags(task);
   const days = daysInStage(task);
   const stagnated = days > 3 && !NON_STAGNATED_STAGES.includes(stage);
@@ -583,19 +586,14 @@ function buildAlerts(pipeline, accounts, today, weekStart, weekEnd, allTasks, vi
   const allActive = Object.values(stages).flat();
   const next7End = addDays(today, 7);
 
-  // 🔴 Approved = 0
-  if ((stages['Aproved'] || []).length === 0) {
-    critical.push('Stage "Aprobado" tiene 0 videos — no hay contenido listo para publicar');
-  }
-
   // 🔴 Ready to upload = 0
   if ((stages['Ready to upload'] || []).length === 0) {
     critical.push('Stage "Ready to upload" tiene 0 videos');
   }
 
-  // 🔴 Task due today with no dropbox link
-  for (const t of allActive.filter(t => t.due_on === today && !t.links.dropbox && !NON_STAGNATED_STAGES.includes(t.stage))) {
-    critical.push(`"${t.name}" vence HOY sin archivo Dropbox`);
+  // 🔴 Task due today with no Frame link
+  for (const t of allActive.filter(t => t.due_on === today && !t.links.frame && !NON_STAGNATED_STAGES.includes(t.stage))) {
+    critical.push(`"${t.name}" vence HOY sin Link de Frame`);
   }
 
   // 🔴 Account 0 scheduled next 7 days AND 0 published this week → >4 days no publish
@@ -656,12 +654,6 @@ function buildAlerts(pipeline, accounts, today, weekStart, weekEnd, allTasks, vi
     if (upcoming.length < 2) {
       attention.push(`Cuenta ${acctData.name}: solo ${upcoming.length} tarea(s) en próximos 7 días`);
     }
-  }
-
-  // 🟡 > 24 without due date
-  const noDate = allActive.filter(t => !t.due_on && !t.completed);
-  if (noDate.length > 24) {
-    attention.push(`${noDate.length} videos sin fecha asignada (umbral: 24)`);
   }
 
   // 🟡 Delivery margin < 2 days
@@ -842,9 +834,8 @@ async function buildDailyData() {
   }
 
   // ── Inventory ─────────────────────────────────────────────────────────────
-  const allActive = tasks.filter(t => !t.completed);
   const readyToUpload = (stagesMap['Ready to upload'] || []).length;
-  const noDate = allActive.filter(t => !t.due_on).length;
+  const noDate = (stagesMap['Resources pending'] || []).length;
   const pausedRecoverable = (stagesMap['Paused'] || []).length;
 
   // producedThisWeek = FIN/ tasks completed this week
@@ -885,10 +876,15 @@ async function buildDailyData() {
     : 'Karen';
   const mostProdCount = Math.max(nicoleMetrics.completedWeek, karenMetrics.completedWeek);
 
+  const mostProductiveToday = nicoleMetrics.inProgressToday >= karenMetrics.inProgressToday
+    ? 'Nicole Zapata'
+    : 'Karen';
+
   const team = {
     nicole: nicoleMetrics,
     karen: karenMetrics,
     mostProductiveThisWeek,
+    mostProductiveToday,
     mostProdCount,
   };
 
@@ -988,7 +984,7 @@ async function buildWeeklyData() {
   const alerts = buildAlerts(pipeline, accounts, today, weekStart, weekEnd);
 
   const readyToUpload = (stagesMap['Ready to upload'] || []).length;
-  const noDate = tasks.filter(t => !t.completed && !t.due_on).length;
+  const noDate = (stagesMap['Resources pending'] || []).length;
   const pausedRecoverable = (stagesMap['Paused'] || []).length;
   const producedThisWeek = tasks.filter(t =>
     t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), weekStart, weekEnd)
@@ -1099,7 +1095,7 @@ async function buildMonthlyData() {
   const alerts = buildAlerts(pipeline, accounts, today, monthStart, monthEnd);
 
   const readyToUpload = (stagesMap['Ready to upload'] || []).length;
-  const noDate = tasks.filter(t => !t.completed && !t.due_on).length;
+  const noDate = (stagesMap['Resources pending'] || []).length;
   const pausedRecoverable = (stagesMap['Paused'] || []).length;
   const producedThisWeek = tasks.filter(t =>
     t.completed && t.completed_at && isInRange(t.completed_at.slice(0, 10), monthStart, monthEnd)
@@ -1223,8 +1219,8 @@ function buildDailyText(data) {
         lines.push(`${t.due_on} — ${shortName(t.name)}`);
         if (t.platforms.length > 0) lines.push(`  📱 ${t.platforms.join(', ')}`);
         lines.push(`  Estado producción: ${estadoIcon(t.estadoProduccion)}`);
-        if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
-        else lines.push('  ⚠️ Sin archivo Dropbox');
+        if (t.links.frame) lines.push(`  🔗 ${t.links.frame}`);
+        else lines.push('  ⚠️ Sin Link de Frame');
         lines.push(`  Stage pipeline: ${t.stage}`);
         if (t.entregaEnRiesgo) lines.push(`  ⚠️ Entrega en riesgo — margen: ${t.margenDias} día(s)`);
       }
@@ -1240,7 +1236,7 @@ function buildDailyText(data) {
   lines.push('');
   const activeStageList = [
     'Concept/Idea', 'Resources pending', 'Ready to edit',
-    'Editing / Design', 'Review & Feedback', 'Aproved', 'Ready to upload',
+    'Editing / Design', 'Review & Feedback', 'Ready to upload',
   ];
   for (const s of activeStageList) {
     const stageTasks = data.pipeline.stages[s] || [];
@@ -1270,7 +1266,7 @@ function buildDailyText(data) {
       lines.push(`    Cuenta: ${t.accounts.join(' + ') || '—'}`);
       lines.push(`    Estado producción: ${estadoIcon(t.estadoProduccion)}`);
       if (t.responsableProduccion) lines.push(`    Responsable: ${t.responsableProduccion}`);
-      if (t.links.dropbox) lines.push(`    🔗 ${t.links.dropbox}`);
+      if (t.links.frame) lines.push(`    🔗 ${t.links.frame}`);
     }
     lines.push('');
   }
@@ -1290,7 +1286,7 @@ function buildDailyText(data) {
       const blockedTags = (t.tags || []).filter(tag => tag.toLowerCase().includes('faltan'));
       if (blockedTags.length > 0) lines.push(`  Bloqueado por: ${blockedTags.join(', ')}`);
       lines.push(`  Responsable: ${t.assignee || '—'}`);
-      if (t.links.dropbox) lines.push(`  🔗 ${t.links.dropbox}`);
+      if (t.links.frame) lines.push(`  🔗 ${t.links.frame}`);
     }
   }
   lines.push('');
@@ -1300,7 +1296,7 @@ function buildDailyText(data) {
   lines.push('📦 INVENTARIO');
   lines.push('');
   lines.push(`Ready to upload: ${data.inventory.readyToUpload} videos listos para publicar`);
-  lines.push(`Sin fecha asignada: ${data.inventory.noDate} videos (sin programar)`);
+  lines.push(`Resources pending: ${data.inventory.noDate} videos (sin iniciar)`);
   lines.push(`Paused recuperables: ${data.inventory.pausedRecoverable}`);
   lines.push('');
   lines.push('Ratio producción/publicación esta semana:');
@@ -1637,7 +1633,7 @@ function buildDailyHTML(data) {
       sc += `<strong style="color:${C.orange};">${shortName(t.name)}</strong>`;
       sc += `<br><span style="color:${C.textMid};font-size:12px;">Stage: ${t.stage} | ${t.days_in_stage} días | ${t.assignee || '—'}</span>`;
       if (t.accounts.length > 0) sc += `<br><span style="color:${C.textDim};font-size:12px;">Cuenta: ${t.accounts.join(' + ')}</span>`;
-      if (t.links.dropbox) sc += `<br><a href="${t.links.dropbox}" style="color:${C.gold};font-size:12px;text-decoration:none;">🔗 Dropbox</a>`;
+      if (t.links.frame) sc += `<br><a href="${t.links.frame}" style="color:${C.gold};font-size:12px;text-decoration:none;">🔗 Frame</a>`;
       sc += `</div>`;
     }
   }
@@ -1648,7 +1644,7 @@ function buildDailyHTML(data) {
   const surplus = data.inventory.producedThisWeek - data.inventory.publishedThisWeek;
   const invRows = [
     ['Ready to upload', `${data.inventory.readyToUpload} videos`, null],
-    ['Sin fecha asignada', `${data.inventory.noDate} videos`, data.inventory.noDate > 24 ? C.red : null],
+    ['Resources pending', `${data.inventory.noDate} videos`, null],
     ['Paused recuperables', String(data.inventory.pausedRecoverable), null],
     ['Producidos esta semana', String(data.inventory.producedThisWeek), null],
     ['Publicados esta semana', String(data.inventory.publishedThisWeek), null],
@@ -1692,7 +1688,6 @@ function buildDailyHTML(data) {
     ['Completadas semana', data.team.nicole.completedWeek, data.team.karen.completedWeek],
     ['En progreso hoy', data.team.nicole.inProgressToday, data.team.karen.inProgressToday],
     ['Pendientes hoy', data.team.nicole.pendingToday, data.team.karen.pendingToday],
-    ['Racha (días)', data.team.nicole.streak, data.team.karen.streak],
     ['Tasa a tiempo', `${data.team.nicole.onTimeRate}%`, `${data.team.karen.onTimeRate}%`],
   ];
   for (let i = 0; i < teamRows.length; i++) {
