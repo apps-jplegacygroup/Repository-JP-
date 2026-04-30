@@ -7,7 +7,7 @@ const {
 } = require('../services/marketingReport');
 const { sendSocialReport, sendDailySocialReport, sendMonthlySocialReport, previewDailySocialReport } = require('../services/socialReport');
 const { debugFUBLeads } = require('../services/fubReport');
-const { yesterdayKeyET } = require('../utils/storage');
+const { yesterdayKeyET, todayKeyET } = require('../utils/storage');
 
 const router = express.Router();
 
@@ -270,6 +270,125 @@ router.get('/debug-fub', async (req, res) => {
     const result = await debugFUBLeads(date);
     return res.json(result);
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /admin/fix-missing-sources?date=YYYY-MM-DD&newSource=Respond.io&dryRun=true
+ *
+ * Finds FUB contacts created on `date` with empty source and tries to update them.
+ * - dryRun=true (default): only lists, no changes.
+ * - dryRun=false: attempts PUT /v1/people/{id} with newSource for each.
+ * - newSource defaults to 'Respond.io' when not provided.
+ *
+ * Note: FUB API silently ignores source updates on contacts that already have a source,
+ * but it may succeed when the source is empty — this endpoint tests that case.
+ */
+router.post('/fix-missing-sources', async (req, res) => {
+  const axios = require('axios');
+
+  const date      = req.query.date      || todayKeyET();
+  const newSource = req.query.newSource || 'Respond.io';
+  const dryRun    = req.query.dryRun !== 'false'; // default true (safe)
+
+  const apiKey = process.env.FUB_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'FUB_API_KEY not set' });
+
+  const encoded = Buffer.from(`${apiKey}:`).toString('base64');
+  const headers = {
+    Authorization: `Basic ${encoded}`,
+    'Content-Type': 'application/json',
+    'X-System': 'jp-legacy-agent',
+    'X-System-Key': apiKey,
+  };
+
+  // Build ET day boundaries for the target date
+  function etDayBounds(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const noonUTC = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    const etHour = parseInt(
+      noonUTC.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }), 10
+    );
+    const offsetHours = 12 - etHour;
+    const dayStart = new Date(Date.UTC(y, m - 1, d, offsetHours, 0, 0, 0));
+    const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+    return { dayStart, dayEnd };
+  }
+
+  try {
+    const { dayStart, dayEnd } = etDayBounds(date);
+    const people = [];
+    let offset = 0;
+
+    // Paginate FUB to collect all contacts created on the target date
+    while (true) {
+      const response = await axios.get('https://api.followupboss.com/v1/people', {
+        headers,
+        params: { sort: '-created', limit: 100, offset },
+        timeout: 15000,
+      });
+      const batch = response.data?.people || [];
+      if (batch.length === 0) break;
+
+      const inDay = batch.filter((p) => {
+        const created = new Date(p.created);
+        return created >= dayStart && created <= dayEnd;
+      });
+      people.push(...inDay);
+
+      const oldest = new Date(batch[batch.length - 1]?.created || 0);
+      if (oldest < dayStart || batch.length < 100) break;
+      offset += 100;
+    }
+
+    // Filter contacts with no source (empty string or null/undefined)
+    const sourceless = people.filter((p) => !p.source || p.source.trim() === '');
+
+    console.log(`[FixSources] date=${date} scanned=${people.length} sourceless=${sourceless.length} dryRun=${dryRun} newSource="${newSource}"`);
+
+    const results = [];
+
+    for (const person of sourceless) {
+      const name = [person.firstName, person.lastName].filter(Boolean).join(' ') || '—';
+
+      if (dryRun) {
+        results.push({ id: person.id, name, phone: person.phones?.[0]?.value || '—', currentSource: person.source || '', action: 'would-update' });
+        continue;
+      }
+
+      // Attempt to update the source via FUB API
+      try {
+        const putRes = await axios.put(
+          `https://api.followupboss.com/v1/people/${person.id}`,
+          { source: newSource },
+          { headers, timeout: 10000 }
+        );
+        const updatedSource = putRes.data?.source || '';
+        const succeeded = updatedSource === newSource;
+        console.log(`[FixSources] PUT ${person.id} (${name}) → status=${putRes.status} source_in_response="${updatedSource}"`);
+        results.push({ id: person.id, name, phone: person.phones?.[0]?.value || '—', succeeded, sourceAfter: updatedSource });
+      } catch (err) {
+        const errMsg = err.response?.data?.message || err.message;
+        console.error(`[FixSources] PUT failed for ${person.id} (${name}):`, errMsg);
+        results.push({ id: person.id, name, phone: person.phones?.[0]?.value || '—', succeeded: false, error: errMsg });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.succeeded).length;
+    const failed    = results.filter((r) => r.succeeded === false).length;
+
+    return res.json({
+      date,
+      newSource,
+      dryRun,
+      scanned: people.length,
+      sourceless: sourceless.length,
+      ...(dryRun ? {} : { attempted: sourceless.length, succeeded, failed }),
+      contacts: results,
+    });
+  } catch (err) {
+    console.error('[FixSources] Error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });

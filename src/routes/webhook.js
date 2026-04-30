@@ -8,6 +8,36 @@ const { addToQueue, incrementStat, incrementStatBySource, recordLeadScore } = re
 const router = express.Router();
 
 /**
+ * Extracts the lead source from a Respond.io webhook body.
+ * Respond.io may send the channel/inbox name in different fields depending on
+ * how the webhook template is configured. We try multiple paths before defaulting.
+ */
+function extractSource(body) {
+  // Try every common field name Respond.io might use
+  const candidates = [
+    body.source,
+    body.channel,
+    body.channelName,
+    body.inboxName,
+    body.inbox,
+    body.conversationChannel,
+    body.conversation?.channel?.name,
+    body.conversation?.inbox?.name,
+    body.contact?.channel,
+    // Tags array → join into a string cleanSourceTag can parse
+    Array.isArray(body.tags) ? body.tags.join(',') : null,
+    Array.isArray(body.contact?.tags) ? body.contact.tags.join(',') : null,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+/**
  * Apply lead score to a FUB contact: update tags and add a score note.
  * Runs async after responding — errors are logged but don't affect the response.
  */
@@ -23,21 +53,38 @@ async function applyScore(lead, rawBody, fubPersonId, existingTags = []) {
   }
 }
 
+// POST /webhook/debug — echo raw body for diagnosing Respond.io payload format (no lead created)
+router.post('/debug', (req, res) => {
+  console.log('[Webhook/debug] Raw body:', JSON.stringify(req.body, null, 2));
+  res.json({ received: true, body: req.body });
+});
+
 // POST /webhook/lead
 router.post('/lead', async (req, res) => {
-  const { name, email, phone, source } = req.body || {};
+  const body = req.body || {};
+  const { name, email, phone } = body;
+
+  // Log the full raw body so we can see exactly what Respond.io sends
+  console.log('[Webhook] Raw body from Respond.io:', JSON.stringify(body));
 
   // Validate required fields
   if (!name || !email) {
     return res.status(400).json({ error: 'Missing required fields: name, email' });
   }
 
+  const rawSource = extractSource(body);
+  const cleanedSource = cleanSourceTag(rawSource || '');
+  // Only fall back to 'Respond.io' if we truly got nothing at all
+  const resolvedSource = cleanedSource && cleanedSource !== 'Sin fuente' ? cleanedSource : (rawSource || 'Respond.io');
+
+  console.log(`[Webhook] Source extraction — raw="${rawSource}" → cleaned="${cleanedSource}" → resolved="${resolvedSource}"`);
+
   const lead = {
     id: uuidv4(),
     name,
     email,
     phone: phone || '',
-    source: cleanSourceTag(source || 'Respond.io'),
+    source: resolvedSource,
     receivedAt: new Date().toISOString(),
     status: 'pending',
     retryCount: 0,

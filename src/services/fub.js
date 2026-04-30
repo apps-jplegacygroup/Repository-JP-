@@ -94,10 +94,12 @@ async function createContact(lead) {
     source: lead.source || 'Respond.io',
   };
 
+  console.log('[FUB] Creating contact — payload:', JSON.stringify(payload));
   const response = await axios.post(`${FUB_BASE_URL}/people`, payload, {
     headers: FUB_HEADERS(),
     timeout: 10000,
   });
+  console.log('[FUB] Contact created — id:', response.data?.id, 'source in response:', response.data?.source);
 
   return response.data;
 }
